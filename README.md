@@ -27,7 +27,25 @@ tuniq error.log access.log
 
 ## Install
 
-Download a binary from the [releases page](../../releases), or build from source:
+Download the latest binary with `curl` or `wget`, or build from source:
+
+### Using curl
+
+```bash
+curl -fsSL -o tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq
+chmod +x tuniq
+sudo mv tuniq /usr/local/bin/tuniq
+sudo ln -sf /usr/local/bin/tuniq /usr/local/bin/tu
+```
+
+### Using wget
+
+```bash
+wget -qO tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq
+chmod +x tuniq
+sudo mv tuniq /usr/local/bin/tuniq
+sudo ln -sf /usr/local/bin/tuniq /usr/local/bin/tu
+```
 
 ```bash
 go build -o tuniq .
