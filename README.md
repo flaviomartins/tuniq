@@ -15,14 +15,28 @@ tuniq [-n N] [-f F] [file ...]
 ## Examples
 
 ```bash
-# top 10 IPs from an access log
-tuniq -n 10 access.log
+# top 10 repeated lines from a text file
+tuniq -n 10 data.txt
 
-# live top 20 from a stream, leaderboard refreshes every 5000 lines
-tail -f access.log | tuniq -n 20 -f 5000
+# top 10 repeated lines from split text files
+tuniq data.0.txt data.1.txt data.2.txt
 
-# multiple files, shared counter
-tuniq error.log access.log
+# top 10 edited articles from a live Wikimedia change stream
+curl -q -sN \
+  -H 'Accept: application/json' \
+  https://stream.wikimedia.org/v2/stream/recentchange \
+  | jq --unbuffered -r 'select(.wiki == "enwiki" and .type == "edit" and .namespace == 0 and .anon != true and .bot != true) | .title' \
+  | tuniq -n 10 -f 1
+
+# top 10 editors from the same live Wikimedia change stream
+curl -q -sN \
+  -H 'Accept: application/json' \
+  https://stream.wikimedia.org/v2/stream/recentchange \
+  | jq --unbuffered -r 'select(.wiki == "enwiki" and .type == "edit" and .namespace == 0 and .anon != true and .bot != true) | .user' \
+  | tuniq -n 10 -f 1
+
+# live top 20 IPs from a stream
+tail -F /var/log/nginx/access.log | awk '{print $1}' | tuniq -n 20 -f 5000
 ```
 
 ## Install
