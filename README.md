@@ -46,7 +46,7 @@ Download the latest binary with `curl` or `wget`, or build from source:
 ### Using curl
 
 ```bash
-curl -fsSL -o tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq
+curl -fsSL -o tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
 chmod +x tuniq
 sudo mv tuniq /usr/local/bin/tuniq
 sudo ln -sf /usr/local/bin/tuniq /usr/local/bin/tu
@@ -55,11 +55,13 @@ sudo ln -sf /usr/local/bin/tuniq /usr/local/bin/tu
 ### Using wget
 
 ```bash
-wget -qO tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq
+wget -qO tuniq https://github.com/flaviomartins/tuniq/releases/latest/download/tuniq-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
 chmod +x tuniq
 sudo mv tuniq /usr/local/bin/tuniq
 sudo ln -sf /usr/local/bin/tuniq /usr/local/bin/tu
 ```
+
+## Build
 
 ```bash
 go build -o tuniq .
