@@ -49,6 +49,8 @@ func BenchmarkProcess(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		counter := make(map[string]*uint64, 1000) // Realistic sizing for 1000 unique keys
-		process(strings.NewReader(data), counter)
+		if err := process(strings.NewReader(data), counter); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
