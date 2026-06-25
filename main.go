@@ -98,7 +98,7 @@ func printTopEntries(counter map[string]*uint64) {
 	w.Flush()
 }
 
-func process(r io.Reader, counter map[string]*uint64) {
+func process(r io.Reader, counter map[string]*uint64) error {
 	scanner := bufio.NewScanner(r)
 	lineCount := 0
 	for scanner.Scan() {
@@ -114,28 +114,35 @@ func process(r io.Reader, counter map[string]*uint64) {
 			printTopEntries(counter)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "tuniq: read error: %v\n", err)
-	}
+	return scanner.Err()
 }
 
 func main() {
 	flag.Parse()
 	counter := make(map[string]*uint64, 1<<16)
+	exitCode := 0
 
 	if flag.NArg() == 0 {
-		process(os.Stdin, counter)
+		if err := process(os.Stdin, counter); err != nil {
+			fmt.Fprintf(os.Stderr, "tuniq: read error: %v\n", err)
+			exitCode = 1
+		}
 	} else {
 		for _, path := range flag.Args() {
 			f, err := os.Open(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
+				exitCode = 1
 				continue
 			}
-			process(f, counter)
+			if err := process(f, counter); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: read error: %v\n", path, err)
+				exitCode = 1
+			}
 			f.Close()
 		}
 	}
 
 	printTopEntries(counter)
+	os.Exit(exitCode)
 }
