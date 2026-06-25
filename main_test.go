@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-func benchmarkCounter(size int) map[string]uint64 {
-	counter := make(map[string]uint64, size)
+func benchmarkCounter(size int) map[string]*uint64 {
+	counter := make(map[string]*uint64, size)
 	for i := 0; i < size; i++ {
-		counter[fmt.Sprintf("line-%06d", i)] = uint64((i % 1000) + 1)
+		val := uint64((i % 1000) + 1)
+		counter[fmt.Sprintf("line-%06d", i)] = &val
 	}
 	return counter
 }
@@ -47,7 +48,7 @@ func BenchmarkProcess(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		counter := make(map[string]uint64, 100_000)
+		counter := make(map[string]*uint64, 1000) // Realistic sizing for 1000 unique keys
 		process(strings.NewReader(data), counter)
 	}
 }

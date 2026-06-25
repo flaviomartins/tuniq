@@ -59,7 +59,7 @@ func (h *entryHeap) Pop() any {
 	return x
 }
 
-func topEntries(counter map[string]uint64) []entry {
+func topEntries(counter map[string]*uint64) []entry {
 	limit := *n
 	if limit <= 0 || len(counter) == 0 {
 		return nil
@@ -69,7 +69,7 @@ func topEntries(counter map[string]uint64) []entry {
 	h := entryHeap{}
 	heap.Init(&h)
 	for k, v := range counter {
-		item := entry{k, v}
+		item := entry{k, *v}
 		if len(h) < limit {
 			heap.Push(&h, item)
 			continue
@@ -88,7 +88,7 @@ func topEntries(counter map[string]uint64) []entry {
 	return top
 }
 
-func printTopEntries(counter map[string]uint64) {
+func printTopEntries(counter map[string]*uint64) {
 	top := topEntries(counter)
 	w := bufio.NewWriter(os.Stdout)
 	w.WriteString("\x1b[2J")
@@ -98,30 +98,27 @@ func printTopEntries(counter map[string]uint64) {
 	w.Flush()
 }
 
-func process(r io.Reader, counter map[string]uint64) {
-	reader := bufio.NewReaderSize(r, 1<<20)
+func process(r io.Reader, counter map[string]*uint64) {
+	scanner := bufio.NewScanner(r)
 	lineCount := 0
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			if line[len(line)-1] == '\n' {
-				line = line[:len(line)-1]
-			}
-			counter[line]++
-			lineCount++
-			if *f > 0 && lineCount%*f == 0 {
-				printTopEntries(counter)
-			}
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if count, ok := counter[string(line)]; ok {
+			*count++
+		} else {
+			val := uint64(1)
+			counter[string(line)] = &val
 		}
-		if err != nil {
-			break
+		lineCount++
+		if *f > 0 && lineCount%*f == 0 {
+			printTopEntries(counter)
 		}
 	}
 }
 
 func main() {
 	flag.Parse()
-	counter := make(map[string]uint64, 1<<16)
+	counter := make(map[string]*uint64, 1<<16)
 
 	if flag.NArg() == 0 {
 		process(os.Stdin, counter)
