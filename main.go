@@ -2,12 +2,12 @@ package main
 
 import (
 	"bufio"
-	"cmp"
+	"container/heap"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"slices"
+	"sort"
 )
 
 var n = flag.Int("n", 10, "show top N lines")
@@ -28,17 +28,68 @@ type entry struct {
 	count uint64
 }
 
-func printTop(counter map[string]uint64) {
-	top := make([]entry, 0, len(counter))
+func entryBetter(a, b entry) bool {
+	if a.count != b.count {
+		return a.count > b.count
+	}
+	return a.key < b.key
+}
+
+func entryWorse(a, b entry) bool {
+	return entryBetter(b, a)
+}
+
+type entryHeap []entry
+
+func (h entryHeap) Len() int { return len(h) }
+
+func (h entryHeap) Less(i, j int) bool {
+	return entryWorse(h[i], h[j])
+}
+
+func (h entryHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *entryHeap) Push(x any) { *h = append(*h, x.(entry)) }
+
+func (h *entryHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+func topEntries(counter map[string]uint64) []entry {
+	limit := *n
+	if limit <= 0 || len(counter) == 0 {
+		return nil
+	}
+
+	top := make([]entry, 0, min(limit, len(counter)))
+	h := entryHeap{}
+	heap.Init(&h)
 	for k, v := range counter {
-		top = append(top, entry{k, v})
+		item := entry{k, v}
+		if len(h) < limit {
+			heap.Push(&h, item)
+			continue
+		}
+		if entryBetter(item, h[0]) {
+			heap.Pop(&h)
+			heap.Push(&h, item)
+		}
 	}
-	slices.SortFunc(top, func(a, b entry) int {
-		return cmp.Compare(b.count, a.count)
+	for len(h) > 0 {
+		top = append(top, heap.Pop(&h).(entry))
+	}
+	sort.Slice(top, func(i, j int) bool {
+		return entryBetter(top[i], top[j])
 	})
-	if len(top) > *n {
-		top = top[:*n]
-	}
+	return top
+}
+
+func printTopEntries(counter map[string]uint64) {
+	top := topEntries(counter)
 	w := bufio.NewWriter(os.Stdout)
 	w.WriteString("\x1b[2J")
 	for _, e := range top {
@@ -48,18 +99,18 @@ func printTop(counter map[string]uint64) {
 }
 
 func process(r io.Reader, counter map[string]uint64) {
-	scanner := bufio.NewReaderSize(r, 1<<20)
-	cnt := 0
+	reader := bufio.NewReaderSize(r, 1<<20)
+	lineCount := 0
 	for {
-		line, err := scanner.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			if line[len(line)-1] == '\n' {
 				line = line[:len(line)-1]
 			}
 			counter[line]++
-			cnt++
-			if cnt%*f == 0 {
-				printTop(counter)
+			lineCount++
+			if *f > 0 && lineCount%*f == 0 {
+				printTopEntries(counter)
 			}
 		}
 		if err != nil {
@@ -86,5 +137,5 @@ func main() {
 		}
 	}
 
-	printTop(counter)
+	printTopEntries(counter)
 }
