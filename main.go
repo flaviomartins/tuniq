@@ -114,6 +114,9 @@ func process(r io.Reader, counter map[string]*uint64) {
 			printTopEntries(counter)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "tuniq: read error: %v\n", err)
+	}
 }
 
 func main() {
