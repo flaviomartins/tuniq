@@ -1,4 +1,4 @@
-package tuniq
+package processor
 
 import (
 	"bufio"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/flaviomartins/tuniq/pkg/config"
 	"github.com/flaviomartins/tuniq/pkg/output"
+	"github.com/flaviomartins/tuniq/pkg/platform"
 	"github.com/flaviomartins/tuniq/pkg/version"
 )
 
@@ -810,7 +811,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 						}
 					}
 					if opts.statsRSS {
-						if rss, ok := readMaxRSSBytes(); ok {
+						if rss, ok := platform.ReadMaxRSSBytes(); ok {
 							rssAvailable.Store(true)
 							setAtomicMax(&peakRSS, rss)
 						}
@@ -947,7 +948,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 		stats.peakHeapSysBytes = heap
 	}
 	if opts.statsRSS {
-		if rss, ok := readMaxRSSBytes(); ok {
+		if rss, ok := platform.ReadMaxRSSBytes(); ok {
 			rssAvailable.Store(true)
 			setAtomicMax(&peakRSS, rss)
 		}
