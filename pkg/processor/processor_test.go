@@ -1,4 +1,4 @@
-package tuniq
+package processor
 
 import (
 	"bytes"
