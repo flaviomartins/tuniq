@@ -8,7 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/cespare/xxhash/v2"
+	"hash/crc32"
 	"io"
 	"os"
 	"runtime"
@@ -1932,8 +1932,10 @@ func shardIndex(line []byte, workers int) int {
 	if workers <= 1 {
 		return 0
 	}
-	return int(xxhash.Sum64(line) % uint64(workers))
+	return int(crc32.Checksum(line, crc32cTable) % uint32(workers))
 }
+
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 func effectiveLiveRenderInterval(opts options, progressInterval time.Duration) time.Duration {
 	if !(opts.flushEvery > 0 && opts.showAll) {
