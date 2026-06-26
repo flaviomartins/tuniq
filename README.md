@@ -174,7 +174,8 @@ Memory growth is proportional to cardinality (unique keys), not total line count
 Build from source:
 
 ```bash
-go build -o tuniq .
+make build
+./bin/tuniq --version
 ```
 
 Requires Go 1.24+.
@@ -182,12 +183,10 @@ Requires Go 1.24+.
 ## Development quality gates
 
 ```bash
-gofmt -w .
-go vet ./...
-go test ./...
+make lint
 go test -race ./...
 go test -bench . ./...
-go build ./...
+make build
 ```
 
 ## Benchmarks and datasets
