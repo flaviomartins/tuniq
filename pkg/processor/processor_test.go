@@ -167,6 +167,19 @@ func TestRunReverseOrdering(t *testing.T) {
 	}
 }
 
+func TestRunNoCountFlag(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	input := "a\na\na\nb\nb\nc\n"
+	code := run([]string{"--no-count"}, strings.NewReader(input), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+	if out.String() != "a\nb\nc\n" {
+		t.Fatalf("unexpected output without counts: %q", out.String())
+	}
+}
+
 func TestRunTopNReverseOrdering(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
