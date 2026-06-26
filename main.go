@@ -816,8 +816,15 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 				now = time.Now()
 				emitUpdate = shouldEmitUpdate(lines, now, &nextLineUpdate, &lastUpdate, opts.progressEvery, secondsInterval)
 			}
+			idx := shardIndex(line, workerCount)
+			if err := appendLineToPendingBatch(line, idx, pendingBatches, &batchPool, jobChans, batchSize, liveMode, workerFail); err != nil {
+				return err
+			}
 			if emitUpdate {
 				if liveMode {
+					if err := flushPendingBatches(pendingBatches, &batchPool, jobChans, workerFail); err != nil {
+						return err
+					}
 					drainRenderDurations(liveRenderCtrl, renderDurCh)
 					if err := pollRenderError(renderErrCh); err != nil {
 						return err
@@ -837,10 +844,6 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 				if opts.progress {
 					fmt.Fprintf(stderr, "progress lines=%d\n", lines)
 				}
-			}
-			idx := shardIndex(line, workerCount)
-			if err := appendLineToPendingBatch(line, idx, pendingBatches, &batchPool, jobChans, batchSize, liveMode, workerFail); err != nil {
-				return err
 			}
 			return nil
 		})
@@ -1149,6 +1152,30 @@ func appendLineToPendingBatch(
 			return err
 		}
 		pendingBatches[shard] = nil
+	}
+	return nil
+}
+
+func flushPendingBatches(
+	pendingBatches []*lineBatch,
+	batchPool *sync.Pool,
+	jobChans []chan *lineBatch,
+	workerFail *workerFailure,
+) error {
+	for i, batch := range pendingBatches {
+		if batch == nil {
+			continue
+		}
+		if len(batch.refs) == 0 {
+			recycleLineBatch(batch)
+			batchPool.Put(batch)
+			pendingBatches[i] = nil
+			continue
+		}
+		if err := sendBatchToWorker(jobChans[i], batch, workerFail); err != nil {
+			return err
+		}
+		pendingBatches[i] = nil
 	}
 	return nil
 }

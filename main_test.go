@@ -10,9 +10,27 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func TestRunEmptyInput(t *testing.T) {
 	var out bytes.Buffer
@@ -201,6 +219,44 @@ func TestRunLiveRefreshDeprecatedAliasStillWorks(t *testing.T) {
 	code := run([]string{"-f", "1"}, strings.NewReader("a\n"), &out, &errOut)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+}
+
+func TestRunLiveRefreshEmitsCountsBeforeEOF(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	if _, err := io.WriteString(inW, "a\n"); err != nil {
+		t.Fatalf("failed to write input: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Contains(out.String(), "1 a") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected live output before EOF, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := inW.Close(); err != nil {
+		t.Fatalf("failed to close input: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
 	}
 }
 
