@@ -125,6 +125,13 @@ memory_limit_bytes=0
 Config: ~/.config/tuniq/.tuniq  
 State: ~/.local/state/tuniq (or OS equivalent)
 
+## Package layout
+
+- `cmd/tuniq`: CLI entrypoint and signal wiring.
+- `pkg/processor`: stream processing orchestration and runtime pipeline.
+- `pkg/platform`: OS-specific RSS helpers.
+- `pkg/config`, `pkg/output`, `pkg/version`: configuration, output formatting, and build metadata.
+
 ## Output
 
 Default plain output:
