@@ -656,6 +656,18 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 							return
 						}
 					case req := <-snapshotReq:
+						for len(jobChans[workerID]) > 0 {
+							batch := <-jobChans[workerID]
+							processBatchIntoCounter(c, tracker, batch, &growthState, memLimit)
+							snapshotDirty[workerID].Store(true)
+							recycleLineBatch(batch)
+							batchPool.Put(batch)
+							if err := checkMemoryLimit(c, memLimit, &memCheckCountdown); err != nil {
+								workerFail.Fail(err)
+								errCh <- err
+								return
+							}
+						}
 						if !req.showAll && req.topN >= 0 {
 							if req.topN == 0 {
 								snapshotTopBuf = snapshotTopBuf[:0]
