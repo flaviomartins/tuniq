@@ -1,13 +1,13 @@
 //go:build !windows
 
-package tuniq
+package platform
 
 import (
 	"runtime"
 	"syscall"
 )
 
-func readMaxRSSBytes() (uint64, bool) {
+func ReadMaxRSSBytes() (uint64, bool) {
 	var usage syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
 		return 0, false
