@@ -1201,10 +1201,10 @@ func finalMemoryLimitCheck(c *mapCounter, memLimit uint64) error {
 }
 
 type workerFailure struct {
-	hasErr atomic.Bool
-	mu     sync.Mutex
-	err    error
-	done   chan struct{}
+	mu   sync.Mutex
+	err  error
+	done chan struct{}
+	once sync.Once
 }
 
 func newWorkerFailure() *workerFailure {
@@ -1215,16 +1215,18 @@ func (w *workerFailure) Fail(err error) {
 	if err == nil {
 		return
 	}
-	if w.hasErr.CompareAndSwap(false, true) {
+	w.once.Do(func() {
 		w.mu.Lock()
 		w.err = err
 		w.mu.Unlock()
 		close(w.done)
-	}
+	})
 }
 
 func (w *workerFailure) Err() error {
-	if !w.hasErr.Load() {
+	select {
+	case <-w.done:
+	default:
 		return nil
 	}
 	w.mu.Lock()
