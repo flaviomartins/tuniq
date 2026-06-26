@@ -8,7 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"hash/maphash"
+	"github.com/cespare/xxhash/v2"
 	"io"
 	"os"
 	"runtime"
@@ -567,7 +567,6 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 	}
 
 	lineCounts := atomic.Uint64{}
-	shardSeed := maphash.MakeSeed()
 	peakHeapSys := atomic.Uint64{}
 	peakRSS := atomic.Uint64{}
 	rssAvailable := atomic.Bool{}
@@ -788,7 +787,6 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 		sendErr = streamLinesDispatch(
 			inputs,
 			workerCount,
-			shardSeed,
 			batchSize,
 			&lineCounts,
 			pendingBatches,
@@ -840,7 +838,7 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 					fmt.Fprintf(stderr, "progress lines=%d\n", lines)
 				}
 			}
-			idx := shardIndex(line, workerCount, shardSeed)
+			idx := shardIndex(line, workerCount)
 			if err := appendLineToPendingBatch(line, idx, pendingBatches, &batchPool, jobChans, batchSize, liveMode, workerFail); err != nil {
 				return err
 			}
@@ -1063,7 +1061,6 @@ func streamLines(inputs []io.ReadCloser, emit func([]byte) error) error {
 func streamLinesDispatch(
 	inputs []io.ReadCloser,
 	workerCount int,
-	shardSeed maphash.Seed,
 	batchSize int,
 	lineCounts *atomic.Uint64,
 	pendingBatches []*lineBatch,
@@ -1094,7 +1091,7 @@ func streamLinesDispatch(
 						line = trimLineEnding(fragment)
 					}
 					lineCounts.Add(1)
-					idx := shardIndex(line, workerCount, shardSeed)
+					idx := shardIndex(line, workerCount)
 					if err := appendLineToPendingBatch(line, idx, pendingBatches, batchPool, jobChans, batchSize, false, workerFail); err != nil {
 						return err
 					}
@@ -1104,7 +1101,7 @@ func streamLinesDispatch(
 				} else if len(longLine) > 0 && errors.Is(err, io.EOF) {
 					line := trimLineEnding(longLine)
 					lineCounts.Add(1)
-					idx := shardIndex(line, workerCount, shardSeed)
+					idx := shardIndex(line, workerCount)
 					if err := appendLineToPendingBatch(line, idx, pendingBatches, batchPool, jobChans, batchSize, false, workerFail); err != nil {
 						return err
 					}
@@ -1931,12 +1928,11 @@ func adaptiveBatchTargets(baseLineTarget, queueLen, queueCap int, liveMode bool)
 	return lineTarget, byteTarget
 }
 
-func shardIndex(line []byte, workers int, seed maphash.Seed) int {
+func shardIndex(line []byte, workers int) int {
 	if workers <= 1 {
 		return 0
 	}
-	h := maphash.Bytes(seed, line)
-	return int(h % uint64(workers))
+	return int(xxhash.Sum64(line) % uint64(workers))
 }
 
 func effectiveLiveRenderInterval(opts options, progressInterval time.Duration) time.Duration {
