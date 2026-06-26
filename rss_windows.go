@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package tuniq
 
 func readMaxRSSBytes() (uint64, bool) {
 	return 0, false
