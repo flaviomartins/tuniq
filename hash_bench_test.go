@@ -1,4 +1,4 @@
-package main
+package tuniq
 
 import (
 	"hash/adler32"

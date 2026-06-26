@@ -1,7 +1,8 @@
-package main
+package tuniq
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"math/rand"
@@ -377,6 +378,20 @@ func TestRunCSVAndJSON(t *testing.T) {
 			t.Fatalf("unexpected json output: %s", got)
 		}
 	})
+}
+
+func TestRunContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := RunContext(ctx, []string{}, strings.NewReader("a\n"), &out, &errOut)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(errOut.String(), "context canceled") {
+		t.Fatalf("unexpected error output: %s", errOut.String())
+	}
 }
 
 func TestRunStats(t *testing.T) {

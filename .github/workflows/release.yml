@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME}"
-          LDFLAGS="-X github.com/flaviomartins/tuniq.version=${VERSION}"
+          LDFLAGS="-X github.com/flaviomartins/tuniq/pkg/version.Version=${VERSION}"
 
           mkdir -p dist
 
@@ -33,7 +33,7 @@ jobs:
             local goarch="$2"
             local name="tuniq-${goos}-${goarch}"
             mkdir -p "dist/${name}"
-            GOOS="$goos" GOARCH="$goarch" go build -ldflags "$LDFLAGS" -o "dist/${name}/tuniq" .
+            GOOS="$goos" GOARCH="$goarch" go build -ldflags "$LDFLAGS" -o "dist/${name}/tuniq" ./cmd/tuniq
             tar -C dist -czf "dist/${name}.tar.gz" "${name}"
             rm -rf "dist/${name}"
           }
@@ -42,7 +42,7 @@ jobs:
             local goarch="$1"
             local name="tuniq-windows-${goarch}"
             mkdir -p "dist/${name}"
-            GOOS=windows GOARCH="$goarch" go build -ldflags "$LDFLAGS" -o "dist/${name}/tuniq.exe" .
+            GOOS=windows GOARCH="$goarch" go build -ldflags "$LDFLAGS" -o "dist/${name}/tuniq.exe" ./cmd/tuniq
             (cd dist && zip -r "${name}.zip" "${name}")
             rm -rf "dist/${name}"
           }

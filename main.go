@@ -1,10 +1,9 @@
-package main
+package tuniq
 
 import (
 	"bufio"
 	"container/heap"
-	"encoding/csv"
-	"encoding/json"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,9 +16,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-var version = "dev"
+	"github.com/flaviomartins/tuniq/pkg/config"
+	"github.com/flaviomartins/tuniq/pkg/output"
+	"github.com/flaviomartins/tuniq/pkg/version"
+)
 
 const liveAllMinRenderInterval = 250 * time.Millisecond
 const liveAllPreviewTopN = 1000
@@ -32,14 +33,6 @@ const counterGrowthProbeLines = 32_768
 const counterGrowthMinUnique = 8_192
 const counterGrowthMinUniqueRatio = 0.40
 const counterGrowthTargetFactor = 2
-
-type outputMode int
-
-const (
-	outputPlain outputMode = iota
-	outputCSV
-	outputJSON
-)
 
 type options struct {
 	topN             int
@@ -54,7 +47,7 @@ type options struct {
 	memoryLimitBytes uint64
 	progressEvery    uint64
 	progressSeconds  float64
-	output           outputMode
+	output           output.Mode
 }
 
 type entry struct {
@@ -372,11 +365,15 @@ func newLiveRenderer(w io.Writer, opts options) *liveRenderer {
 	}
 }
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return RunContext(context.Background(), args, stdin, stdout, stderr)
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return Run(args, stdin, stdout, stderr)
+}
+
+func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	opts, paths, err := parseFlags(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -393,7 +390,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tuniq: -u/--update-every must be zero or greater")
 		return 2
 	}
-	if opts.flushEvery > 0 && opts.output != outputPlain {
+	if opts.flushEvery > 0 && opts.output != output.ModePlain {
 		fmt.Fprintln(stderr, "tuniq: -u/--update-every is only supported with plain output")
 		return 2
 	}
@@ -433,7 +430,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if opts.flushEvery > 0 {
 		renderer = newLiveRenderer(stdout, opts)
 	}
-	shards, stats, processErr := processStream(inputReaders, opts, renderer, stderr)
+	shards, stats, processErr := processStream(ctx, inputReaders, opts, renderer, stderr)
 	if processErr != nil {
 		fmt.Fprintf(stderr, "tuniq: %v\n", processErr)
 		return 1
@@ -467,39 +464,53 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
+	defaults, err := config.LoadDefault()
+	if err != nil {
+		return options{}, nil, err
+	}
+
 	fs := flag.NewFlagSet("tuniq", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	opts := options{
-		topN:          -1,
-		showCount:     true,
-		workers:       runtime.GOMAXPROCS(0),
-		progressEvery: 1_000_000,
+		topN:             defaults.TopN,
+		showAll:          defaults.ShowAll,
+		reverse:          defaults.Reverse,
+		showCount:        defaults.ShowCount,
+		flushEvery:       defaults.UpdateEvery,
+		stats:            defaults.Stats,
+		statsRSS:         defaults.StatsRSS,
+		progress:         defaults.Progress,
+		workers:          defaults.Workers,
+		memoryLimitBytes: defaults.MemoryLimitBytes,
+		progressEvery:    defaults.ProgressEvery,
+		progressSeconds:  defaults.ProgressSeconds,
+		output:           defaults.OutputMode,
 	}
 
 	var showVersion bool
 	var csvOut bool
 	var jsonOut bool
 
-	fs.IntVar(&opts.topN, "n", -1, "show top N entries")
-	fs.IntVar(&opts.flushEvery, "u", 0, "update every N lines in live mode (plain output only)")
-	fs.IntVar(&opts.flushEvery, "update-every", 0, "long form for -u")
-	fs.IntVar(&opts.flushEvery, "f", 0, "deprecated alias for -u")
-	fs.IntVar(&opts.flushEvery, "flush-every", 0, "deprecated alias for --update-every")
-	fs.BoolVar(&opts.showAll, "a", false, "show all entries (live mode shows throttled preview; EOF output is complete)")
-	fs.BoolVar(&opts.reverse, "r", false, "reverse ordering (ascending count)")
-	fs.BoolVar(&opts.showCount, "c", true, "show counts")
+	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
+	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
+	fs.IntVar(&opts.flushEvery, "update-every", opts.flushEvery, "long form for -u")
+	fs.IntVar(&opts.flushEvery, "f", opts.flushEvery, "deprecated alias for -u")
+	fs.IntVar(&opts.flushEvery, "flush-every", opts.flushEvery, "deprecated alias for --update-every")
+	fs.BoolVar(&opts.showAll, "a", opts.showAll, "show all entries (live mode shows throttled preview; EOF output is complete)")
+	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
+	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
 	fs.BoolVar(&csvOut, "csv", false, "output CSV")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON")
-	fs.BoolVar(&opts.stats, "stats", false, "write processing statistics to stderr")
-	fs.BoolVar(&opts.statsRSS, "stats-rss", false, "include OS-reported peak RSS in stats when available")
-	fs.BoolVar(&opts.progress, "progress", false, "write periodic progress to stderr")
+	fs.BoolVar(&opts.stats, "stats", opts.stats, "write processing statistics to stderr")
+	fs.BoolVar(&opts.statsRSS, "stats-rss", opts.statsRSS, "include OS-reported peak RSS in stats when available")
+	fs.BoolVar(&opts.progress, "progress", opts.progress, "write periodic progress to stderr")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.IntVar(&opts.workers, "workers", opts.workers, "number of worker shards")
-	fs.Uint64Var(&opts.memoryLimitBytes, "memory-limit-bytes", 0, "memory limit before aborting (spill-to-disk not implemented)")
+	fs.Uint64Var(&opts.memoryLimitBytes, "memory-limit-bytes", opts.memoryLimitBytes, "memory limit before aborting (spill-to-disk not implemented)")
 	fs.Uint64Var(&opts.progressEvery, "progress-every", opts.progressEvery, "progress interval in lines")
-	fs.Float64Var(&opts.progressSeconds, "s", 0, "short form for --progress-every-seconds")
-	fs.Float64Var(&opts.progressSeconds, "progress-every-seconds", 0, "update interval in seconds")
+	fs.Float64Var(&opts.progressSeconds, "s", opts.progressSeconds, "short form for --progress-every-seconds")
+	fs.Float64Var(&opts.progressSeconds, "progress-every-seconds", opts.progressSeconds, "update interval in seconds")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: tuniq [options] [file ...]")
 		fmt.Fprintln(stderr, "")
@@ -520,18 +531,32 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 		return options{}, nil, err
 	}
 	if showVersion {
-		fmt.Fprintf(stderr, "tuniq %s\n", version)
+		fmt.Fprintf(stderr, "tuniq %s\n", version.Version)
 		return options{}, nil, flag.ErrHelp
 	}
-	if csvOut && jsonOut {
+	modeFlagCount := 0
+	csvSet, jsonSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "csv":
+			csvSet = true
+		case "json":
+			jsonSet = true
+		}
+	})
+	if csvSet {
+		modeFlagCount++
+	}
+	if jsonSet {
+		modeFlagCount++
+	}
+	if modeFlagCount > 1 {
 		return options{}, nil, errors.New("--csv and --json are mutually exclusive")
 	}
-	if csvOut {
-		opts.output = outputCSV
-	} else if jsonOut {
-		opts.output = outputJSON
-	} else {
-		opts.output = outputPlain
+	if csvSet && csvOut {
+		opts.output = output.ModeCSV
+	} else if jsonSet && jsonOut {
+		opts.output = output.ModeJSON
 	}
 	if opts.progressEvery == 0 && opts.progressSeconds == 0 {
 		return options{}, nil, errors.New("progress-every or progress-every-seconds must be greater than zero")
@@ -539,7 +564,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	return opts, fs.Args(), nil
 }
 
-func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer, stderr io.Writer) ([][]entry, runStats, error) {
+func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, renderer *liveRenderer, stderr io.Writer) ([][]entry, runStats, error) {
 	stats := runStats{}
 	workerCount := opts.workers
 	liveMode := opts.flushEvery > 0
@@ -798,6 +823,7 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 	var sendErr error
 	if !updateEnabled {
 		sendErr = streamLinesDispatch(
+			ctx,
 			inputs,
 			workerCount,
 			batchSize,
@@ -808,13 +834,18 @@ func processStream(inputs []io.ReadCloser, opts options, renderer *liveRenderer,
 			workerFail,
 		)
 	} else {
-		sendErr = streamLines(inputs, func(line []byte) error {
+		sendErr = streamLines(ctx, inputs, func(line []byte) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			if err := workerFail.Err(); err != nil {
 				return err
 			}
 			lines := lineCounts.Add(1)
 			if liveMode && lines%liveChannelPollEveryLines == 0 {
-				if err := pollLiveChannels(stopCh, liveRenderCtrl, renderDurCh, renderErrCh); err != nil {
+				if err := pollLiveChannels(ctx, stopCh, liveRenderCtrl, renderDurCh, renderErrCh); err != nil {
 					return err
 				}
 			}
@@ -936,11 +967,17 @@ func enqueueRenderRequest(renderReqCh chan struct{}) bool {
 }
 
 func pollLiveChannels(
+	ctx context.Context,
 	stopCh <-chan struct{},
 	ctrl *liveRenderControl,
 	renderDurCh <-chan time.Duration,
 	renderErrCh <-chan error,
 ) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	select {
 	case <-stopCh:
 		return errors.New("processing stopped")
@@ -1023,12 +1060,17 @@ func liveSnapshotSelection(opts options) (topN int, showAll bool) {
 	return opts.topN, opts.showAll
 }
 
-func streamLines(inputs []io.ReadCloser, emit func([]byte) error) error {
+func streamLines(ctx context.Context, inputs []io.ReadCloser, emit func([]byte) error) error {
 	for _, input := range inputs {
 		reader := acquireStreamReader(input)
 		readErr := func() error {
 			var longLine []byte
 			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
 				fragment, err := reader.ReadSlice('\n')
 				if errors.Is(err, bufio.ErrBufferFull) {
 					longLine = append(longLine, fragment...)
@@ -1075,6 +1117,7 @@ func streamLines(inputs []io.ReadCloser, emit func([]byte) error) error {
 }
 
 func streamLinesDispatch(
+	ctx context.Context,
 	inputs []io.ReadCloser,
 	workerCount int,
 	batchSize int,
@@ -1089,6 +1132,11 @@ func streamLinesDispatch(
 		readErr := func() error {
 			var longLine []byte
 			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
 				if err := workerFail.Err(); err != nil {
 					return err
 				}
@@ -1700,96 +1748,12 @@ func bitmapBitSet(words []uint64, i int) bool {
 }
 
 func writeOutput(w io.Writer, entries []entry, opts options) error {
-	switch opts.output {
-	case outputCSV:
-		return writeCSV(w, entries, opts.showCount)
-	case outputJSON:
-		return writeJSON(w, entries, opts.showCount)
-	default:
-		return writePlain(w, entries, opts.showCount)
-	}
-}
-
-func writePlain(w io.Writer, entries []entry, showCount bool) error {
-	bw := bufio.NewWriterSize(w, 256*1024)
+	rows := make([]output.Row, 0, len(entries))
 	for _, e := range entries {
-		if showCount {
-			if _, err := fmt.Fprintf(bw, "%d %s\n", e.count, e.value); err != nil {
-				return err
-			}
-		} else {
-			if _, err := fmt.Fprintf(bw, "%s\n", e.value); err != nil {
-				return err
-			}
-		}
+		rows = append(rows, output.Row{Value: e.value, Count: e.count})
 	}
-	return bw.Flush()
-}
-
-func writeCSV(w io.Writer, entries []entry, showCount bool) error {
-	cw := csv.NewWriter(w)
-	if showCount {
-		if err := cw.Write([]string{"count", "value"}); err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if err := cw.Write([]string{fmt.Sprintf("%d", e.count), e.value}); err != nil {
-				return err
-			}
-		}
-	} else {
-		if err := cw.Write([]string{"value"}); err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if err := cw.Write([]string{e.value}); err != nil {
-				return err
-			}
-		}
-	}
-	cw.Flush()
-	return cw.Error()
-}
-
-func writeJSON(w io.Writer, entries []entry, showCount bool) error {
-	type jsonEntryWithCount struct {
-		Value string `json:"value"`
-		Count uint64 `json:"count"`
-	}
-	type jsonEntryValueOnly struct {
-		Value string `json:"value"`
-	}
-
-	bw := bufio.NewWriterSize(w, 256*1024)
-	if _, err := bw.WriteString("["); err != nil {
-		return err
-	}
-	for i, e := range entries {
-		if i > 0 {
-			if _, err := bw.WriteString(","); err != nil {
-				return err
-			}
-		}
-		var (
-			b   []byte
-			err error
-		)
-		if showCount {
-			b, err = json.Marshal(jsonEntryWithCount{Value: e.value, Count: e.count})
-		} else {
-			b, err = json.Marshal(jsonEntryValueOnly{Value: e.value})
-		}
-		if err != nil {
-			return err
-		}
-		if _, err := bw.Write(b); err != nil {
-			return err
-		}
-	}
-	if _, err := bw.WriteString("]\n"); err != nil {
-		return err
-	}
-	return bw.Flush()
+	writer := output.NewWriter(w, opts.output, opts.showCount)
+	return writer.Write(rows)
 }
 
 func writeStats(w io.Writer, stats runStats) {
