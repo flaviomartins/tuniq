@@ -492,6 +492,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	var showVersion bool
 	var csvOut bool
 	var jsonOut bool
+	var noCount bool
 
 	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
 	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
@@ -501,6 +502,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&opts.showAll, "a", opts.showAll, "show all entries (live mode shows throttled preview; EOF output is complete)")
 	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
 	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
+	fs.BoolVar(&noCount, "no-count", false, "hide counts")
 	fs.BoolVar(&csvOut, "csv", false, "output CSV")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON")
 	fs.BoolVar(&opts.stats, "stats", opts.stats, "write processing statistics to stderr")
@@ -534,6 +536,9 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	if showVersion {
 		fmt.Fprintf(stderr, "tuniq %s\n", version.Version)
 		return options{}, nil, flag.ErrHelp
+	}
+	if noCount {
+		opts.showCount = false
 	}
 	modeFlagCount := 0
 	csvSet, jsonSet := false, false

@@ -48,6 +48,7 @@ Flags:
 - `-a` show all entries
 - `-r` reverse ordering (ascending count)
 - `-c` show counts (default true)
+- `--no-count` hide counts
 - `-u N`, `--update-every N` live updates every N lines (plain output only)
 - `--csv` CSV output
 - `--json` JSON output
@@ -82,7 +83,7 @@ curl -q -sN https://stream.wikimedia.org/v2/stream/recentchange \
 ### Value-only output
 
 ```bash
-cat queries.txt | tuniq -c=false
+cat queries.txt | tuniq --no-count
 ```
 
 ### Machine-readable output
