@@ -12,7 +12,7 @@ import (
 var benchLines = [][]byte{
 	[]byte("line-000042"),                                 // ~11 bytes – typical duplicate-heavy key
 	[]byte("line-012345"),                                 // ~11 bytes
-	[]byte("192.168.1.1 - - [26/Jun/2026]"),              // ~30 bytes – log-line prefix
+	[]byte("192.168.1.1 - - [26/Jun/2026]"),               // ~30 bytes – log-line prefix
 	[]byte("the quick brown fox jumps over the lazy dog"), // ~43 bytes
 }
 
