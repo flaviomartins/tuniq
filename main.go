@@ -19,7 +19,8 @@ import (
 	"time"
 )
 
-const version = "1.0.0"
+var version = "dev"
+
 const liveAllMinRenderInterval = 250 * time.Millisecond
 const liveAllPreviewTopN = 1000
 const maxBatchBytes = 64 * 1024
