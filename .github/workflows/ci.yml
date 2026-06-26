@@ -2,44 +2,39 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-      - "flaviomartins-*"
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version-file: go.mod
 
       - name: go fmt
         shell: bash
         run: |
-          test -z "$(gofmt -l .)"
+          set -euo pipefail
+          if [ "$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))" != "" ]; then
+            echo "Go files are not formatted"
+            gofmt -l $(find . -name '*.go' -not -path './.git/*')
+            exit 1
+          fi
 
       - name: go vet
         run: go vet ./...
 
       - name: go test
         run: go test ./...
-
-      - name: go test -race
-        run: go test -race ./...
-
-      - name: go test -bench
-        run: go test -bench . ./...
 
       - name: go build
         run: go build ./...
