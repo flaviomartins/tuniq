@@ -1,6 +1,8 @@
 BINARY=tuniq
 PKG=./...
-LDFLAGS=-X github.com/flaviomartins/tuniq/pkg/version.Version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS=-X github.com/flaviomartins/tuniq/pkg/version.Version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) \
+-X github.com/flaviomartins/tuniq/pkg/version.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo none) \
+-X github.com/flaviomartins/tuniq/pkg/version.Date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 .PHONY: build test fmt vet lint clean release
 
