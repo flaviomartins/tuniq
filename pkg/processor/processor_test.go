@@ -483,11 +483,12 @@ func TestRunLiveRefreshIgnoresSlowProgressSecondsForStatusUpdates(t *testing.T) 
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if strings.Count(out.String(), "streaming") >= 2 {
+		current := out.String()
+		if strings.Count(current, "streaming") >= 2 && distinctSpinnerFrames(current) >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("expected multiple streaming refreshes before slow progress-seconds cadence elapsed, got output=%q stderr=%q", out.String(), errOut.String())
+			t.Fatalf("expected multiple streaming refreshes and spinner updates before slow progress-seconds cadence elapsed, got output=%q stderr=%q", out.String(), errOut.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -500,6 +501,16 @@ func TestRunLiveRefreshIgnoresSlowProgressSecondsForStatusUpdates(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatalf("run did not finish")
 	}
+}
+
+func distinctSpinnerFrames(s string) int {
+	seen := make(map[rune]struct{}, len(statusSpinnerFrames))
+	for _, r := range s {
+		if strings.ContainsRune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", r) {
+			seen[r] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 func TestRunLiveRefreshRejectsJSON(t *testing.T) {
