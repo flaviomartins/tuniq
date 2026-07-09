@@ -44,6 +44,7 @@ type options struct {
 	stats            bool
 	statsRSS         bool
 	progress         bool
+	statusBar        bool
 	workers          int
 	memoryLimitBytes uint64
 	progressEvery    uint64
@@ -635,6 +636,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 		stats:            defaults.Stats,
 		statsRSS:         defaults.StatsRSS,
 		progress:         defaults.Progress,
+		statusBar:        defaults.StatusBar,
 		workers:          defaults.Workers,
 		memoryLimitBytes: defaults.MemoryLimitBytes,
 		progressEvery:    defaults.ProgressEvery,
@@ -646,6 +648,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	var csvOut bool
 	var jsonOut bool
 	var noCount bool
+	var noStatus bool
 
 	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
 	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
@@ -656,6 +659,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
 	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
 	fs.BoolVar(&noCount, "no-count", false, "hide counts")
+	fs.BoolVar(&noStatus, "no-status", false, "hide the live status bar (spinner, rate, sparkline)")
 	fs.BoolVar(&csvOut, "csv", false, "output CSV")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON")
 	fs.BoolVar(&opts.stats, "stats", opts.stats, "write processing statistics to stderr")
@@ -692,6 +696,9 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	}
 	if noCount {
 		opts.showCount = false
+	}
+	if noStatus {
+		opts.statusBar = false
 	}
 	modeFlagCount := 0
 	csvSet, jsonSet := false, false
@@ -752,7 +759,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	}
 
 	lineCounts := atomic.Uint64{}
-	if renderer != nil {
+	if renderer != nil && opts.statusBar {
 		renderer.SetLineCountSource(&lineCounts)
 	}
 	peakHeapSys := atomic.Uint64{}
@@ -1752,7 +1759,7 @@ func (r *liveRenderer) render(entries []entry) error {
 			}
 		}
 		// Status bar sits on the line immediately after the last entry.
-		if r.lineCountSrc != nil || r.eofReceived {
+		if r.lineCountSrc != nil {
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 			r.frameBuf = r.appendStatusLine(r.frameBuf)
@@ -1805,7 +1812,7 @@ func (r *liveRenderer) render(entries []entry) error {
 	if !changed {
 		// Entries unchanged — still refresh the status bar so the spinner and
 		// rate stay up-to-date.
-		if r.lineCountSrc != nil || r.eofReceived {
+		if r.lineCountSrc != nil {
 			if err := writeCursorHomeLine(bw, len(r.prevEntries)+1, r.ansiScratch[:0]); err != nil {
 				return err
 			}
@@ -1860,7 +1867,7 @@ func (r *liveRenderer) render(entries []entry) error {
 	if err := writeCursorHomeLine(bw, newStatusLine, r.ansiScratch[:0]); err != nil {
 		return err
 	}
-	if r.lineCountSrc != nil || r.eofReceived {
+	if r.lineCountSrc != nil {
 		r.frameBuf = r.frameBuf[:0]
 		r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 		r.frameBuf = r.appendStatusLine(r.frameBuf)

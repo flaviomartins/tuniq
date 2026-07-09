@@ -50,6 +50,7 @@ Flags:
 - `-c` show counts (default true)
 - `--no-count` hide counts
 - `-u N`, `--update-every N` live updates every N lines (plain output only)
+- `--no-status` hide the live status bar (spinner, rate, sparkline)
 - `--csv` CSV output
 - `--json` JSON output
 - `--workers N` worker shards (default: `GOMAXPROCS`)
@@ -118,6 +119,7 @@ progress_every=500000
 progress_every_seconds=0
 stats=false
 stats_rss=false
+status=true
 memory_limit_bytes=0
 ```
 
