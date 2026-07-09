@@ -25,6 +25,7 @@ import (
 
 const liveAllMinRenderInterval = 250 * time.Millisecond
 const liveAllPreviewTopN = 1000
+const liveStatusRenderInterval = time.Second
 const maxBatchBytes = 64 * 1024
 const maxAdaptiveBatchFactor = 4
 const liveRenderMaxInterval = 2 * time.Second
@@ -785,12 +786,34 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	snapshotShards := make([][]entry, workerCount)
 	snapshotDirty := make([]atomic.Bool, workerCount)
 	renderReqCh := make(chan struct{}, 1)
+	statusRenderReqCh := make(chan struct{}, 1)
 	renderErrCh := make(chan error, 1)
 	renderDurCh := make(chan time.Duration, 1)
 	resultCh := make(chan workerResult, workerCount)
 	errCh := make(chan error, workerCount+1)
 	stopCh := make(chan struct{})
 	workerFail := newWorkerFailure()
+	requestLiveRender := func(now time.Time, force bool) error {
+		if err := flushPendingBatches(pendingBatches, &batchPool, jobChans, workerFail); err != nil {
+			return err
+		}
+		drainRenderDurations(liveRenderCtrl, renderDurCh)
+		if err := pollRenderError(renderErrCh); err != nil {
+			return err
+		}
+		if now.IsZero() {
+			now = time.Now()
+		}
+		if !force && liveRenderCtrl != nil && !liveRenderCtrl.shouldRender(now) {
+			return nil
+		}
+		if enqueueRenderRequest(renderReqCh) {
+			if liveRenderCtrl != nil {
+				liveRenderCtrl.recordRender(now, 0)
+			}
+		}
+		return pollRenderError(renderErrCh)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
@@ -935,21 +958,41 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			var snapshotMergeBuf []entry
 			var snapshotNodeBuf []mergeNode
 			var snapshotRequested []bool
-			for range renderReqCh {
+			fullReqCh := renderReqCh
+			statusReqCh := statusRenderReqCh
+			for fullReqCh != nil || statusReqCh != nil {
 				renderStart := time.Now()
-				snapshotMergeBuf, snapshotNodeBuf, snapshotRequested = snapshotEntriesFromWorkers(
-					snapshotReqChans,
-					snapshotResponses,
-					snapshotShards,
-					snapshotDirty,
-					opts,
-					snapshotMergeBuf,
-					snapshotNodeBuf,
-					snapshotRequested,
-				)
-				if err := renderer.render(snapshotMergeBuf); err != nil {
+				var renderErr error
+				select {
+				case _, ok := <-fullReqCh:
+					if !ok {
+						fullReqCh = nil
+						continue
+					}
+					snapshotMergeBuf, snapshotNodeBuf, snapshotRequested = snapshotEntriesFromWorkers(
+						snapshotReqChans,
+						snapshotResponses,
+						snapshotShards,
+						snapshotDirty,
+						opts,
+						snapshotMergeBuf,
+						snapshotNodeBuf,
+						snapshotRequested,
+					)
+					renderErr = renderer.render(snapshotMergeBuf)
+				case _, ok := <-statusReqCh:
+					if !ok {
+						statusReqCh = nil
+						continue
+					}
+					if !renderer.initialized {
+						continue
+					}
+					renderErr = renderer.render(snapshotMergeBuf)
+				}
+				if renderErr != nil {
 					select {
-					case renderErrCh <- err:
+					case renderErrCh <- renderErr:
 					default:
 					}
 					return
@@ -961,7 +1004,27 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			}
 		}()
 	}
-
+	var statusWG sync.WaitGroup
+	statusRenderStopCh := make(chan struct{})
+	if liveMode && opts.statusBar {
+		statusWG.Add(1)
+		go func() {
+			defer statusWG.Done()
+			ticker := time.NewTicker(liveStatusRenderInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-statusRenderStopCh:
+					return
+				case <-ticker.C:
+					if lineCounts.Load() == 0 {
+						continue
+					}
+					enqueueRenderRequest(statusRenderReqCh)
+				}
+			}
+		}()
+	}
 	sampleMemory := opts.stats || opts.statsRSS || opts.memoryLimitBytes > 0
 	var done chan struct{}
 	if sampleMemory {
@@ -1038,30 +1101,14 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			if err := appendLineToPendingBatch(line, idx, pendingBatches, &batchPool, jobChans, batchSize, liveMode, workerFail); err != nil {
 				return err
 			}
-			if emitUpdate {
-				if liveMode {
-					if err := flushPendingBatches(pendingBatches, &batchPool, jobChans, workerFail); err != nil {
-						return err
-					}
-					drainRenderDurations(liveRenderCtrl, renderDurCh)
-					if err := pollRenderError(renderErrCh); err != nil {
-						return err
-					}
-					if now.IsZero() {
-						now = time.Now()
-					}
-					if liveRenderCtrl.shouldRender(now) {
-						if enqueueRenderRequest(renderReqCh) {
-							liveRenderCtrl.recordRender(now, 0)
-						}
-						if err := pollRenderError(renderErrCh); err != nil {
-							return err
-						}
-					}
+			forceRender := liveMode && opts.statusBar && lines == 1
+			if liveMode && (emitUpdate || forceRender) {
+				if err := requestLiveRender(now, forceRender); err != nil {
+					return err
 				}
-				if opts.progress {
-					fmt.Fprintf(stderr, "progress lines=%d\n", lines)
-				}
+			}
+			if emitUpdate && opts.progress {
+				fmt.Fprintf(stderr, "progress lines=%d\n", lines)
 			}
 			return nil
 		})
@@ -1080,6 +1127,9 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 		}
 	}
 	if liveMode {
+		close(statusRenderStopCh)
+		statusWG.Wait()
+		close(statusRenderReqCh)
 		close(renderReqCh)
 		renderWG.Wait()
 		select {

@@ -325,6 +325,183 @@ func TestRunLiveRefreshEmitsCountsBeforeEOF(t *testing.T) {
 	}
 }
 
+func TestRunLiveRefreshShowsStreamingStatusBetweenSparseFlushes(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	go func() {
+		ticker := time.NewTicker(75 * time.Millisecond)
+		defer ticker.Stop()
+		defer func() {
+			_ = inW.Close()
+		}()
+		for i := 0; i < 20; i++ {
+			<-ticker.C
+			if _, err := io.WriteString(inW, "a\n"); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if strings.Contains(out.String(), "streaming") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected streaming status before EOF with sparse flush cadence, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
+func TestRunLiveRefreshShowsStreamingStatusSoonAfterFirstLine(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	if _, err := io.WriteString(inW, "a\n"); err != nil {
+		t.Fatalf("failed to write input: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if strings.Contains(out.String(), "streaming") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected prompt streaming status after first line, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := inW.Close(); err != nil {
+		t.Fatalf("failed to close input: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
+func TestRunLiveRefreshShowsWaitingStatusWhenStreamGoesIdle(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	if _, err := io.WriteString(inW, "a\n"); err != nil {
+		t.Fatalf("failed to write input: %v", err)
+	}
+
+	streamingDeadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if strings.Contains(out.String(), "streaming") {
+			break
+		}
+		if time.Now().After(streamingDeadline) {
+			t.Fatalf("expected streaming status before idle transition, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	waitingDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Contains(out.String(), "waiting") {
+			break
+		}
+		if time.Now().After(waitingDeadline) {
+			t.Fatalf("expected waiting status while stream remained open, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := inW.Close(); err != nil {
+		t.Fatalf("failed to close input: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
+func TestRunLiveRefreshIgnoresSlowProgressSecondsForStatusUpdates(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--progress-every", "0", "--progress-every-seconds", "5", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		defer func() {
+			_ = inW.Close()
+		}()
+		for i := 0; i < 8; i++ {
+			<-ticker.C
+			if _, err := io.WriteString(inW, "a\n"); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if strings.Count(out.String(), "streaming") >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected multiple streaming refreshes before slow progress-seconds cadence elapsed, got output=%q stderr=%q", out.String(), errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
 func TestRunLiveRefreshRejectsJSON(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
