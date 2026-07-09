@@ -45,6 +45,57 @@ func TestRunEmptyInput(t *testing.T) {
 	}
 }
 
+// TestLiveModeEmptyInput ensures that live mode on an empty stream produces no
+// stdout output (no ANSI sequences, no status bar).
+func TestLiveModeEmptyInput(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := run([]string{"-u", "1"}, strings.NewReader(""), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no stdout on empty live-mode input, got %d bytes: %q", out.Len(), out.String())
+	}
+}
+
+// TestNoStatusFlagSuppressesStatusBar checks that --no-status omits the status
+// bar text from live mode output.
+func TestNoStatusFlagSuppressesStatusBar(t *testing.T) {
+	input := strings.Repeat("foo\nbar\nbaz\n", 100)
+	var with, without, errOut bytes.Buffer
+
+	if run([]string{"-n", "3", "-u", "50"}, strings.NewReader(input), &with, &errOut) != 0 {
+		t.Fatalf("run with status failed: %s", errOut.String())
+	}
+	errOut.Reset()
+	if run([]string{"-n", "3", "-u", "50", "--no-status"}, strings.NewReader(input), &without, &errOut) != 0 {
+		t.Fatalf("run without status failed: %s", errOut.String())
+	}
+
+	if !strings.Contains(with.String(), "streaming") && !strings.Contains(with.String(), "complete") {
+		t.Fatal("expected status bar text (streaming/complete) in default live output")
+	}
+	if strings.Contains(without.String(), "streaming") || strings.Contains(without.String(), "complete") {
+		t.Fatalf("expected no status bar text with --no-status, got %q", without.String())
+	}
+}
+
+// TestStatusFlagOverridesConfig verifies that --status and --no-status are
+// recognized by the flag parser without error.
+func TestStatusFlagOverridesConfig(t *testing.T) {
+	input := "a\nb\na\n"
+	var out, errOut bytes.Buffer
+	if run([]string{"-u", "1", "--status"}, strings.NewReader(input), &out, &errOut) != 0 {
+		t.Fatalf("--status flag rejected: %s", errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if run([]string{"-u", "1", "--no-status"}, strings.NewReader(input), &out, &errOut) != 0 {
+		t.Fatalf("--no-status flag rejected: %s", errOut.String())
+	}
+}
+
 func TestRunDuplicateLines(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

@@ -44,6 +44,7 @@ type options struct {
 	stats            bool
 	statsRSS         bool
 	progress         bool
+	statusBar        bool
 	workers          int
 	memoryLimitBytes uint64
 	progressEvery    uint64
@@ -300,6 +301,12 @@ type snapshotRequest struct {
 	reverse bool
 }
 
+// statusSpinnerFrames are braille-dot spinner frames for the live status bar.
+var statusSpinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// sparklineTicks are Unicode block characters used to draw throughput sparklines.
+var sparklineTicks = [...]string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
+
 type liveRenderer struct {
 	w           io.Writer
 	bw          *bufio.Writer
@@ -309,6 +316,16 @@ type liveRenderer struct {
 	ansiScratch []byte
 	dirtyBitmap []uint64
 	frameBuf    []byte
+
+	// status bar
+	lineCountSrc   *atomic.Uint64
+	spinnerIdx     int
+	prevLineCount  uint64
+	prevRenderTime time.Time
+	throughputBuf  [8]float64
+	throughputPos  int
+	throughputFull bool
+	eofReceived    bool
 }
 
 type liveRenderControl struct {
@@ -364,6 +381,146 @@ func newLiveRenderer(w io.Writer, opts options) *liveRenderer {
 		ansiScratch: make([]byte, 0, 32),
 		frameBuf:    make([]byte, 0, 4096),
 	}
+}
+
+// SetLineCountSource wires the renderer to an external atomic counter so the
+// status bar can display live line counts and compute throughput.
+func (r *liveRenderer) SetLineCountSource(src *atomic.Uint64) {
+	r.lineCountSrc = src
+}
+
+// SetEOF marks the stream as finished so the status bar shows "complete".
+func (r *liveRenderer) SetEOF() {
+	r.eofReceived = true
+}
+
+// appendStatusLine appends a one-line status bar to buf and returns it.
+// The bar shows: spinner · state · line count · sparkline · rate.
+func (r *liveRenderer) appendStatusLine(buf []byte) []byte {
+	now := time.Now()
+
+	var lineCount uint64
+	if r.lineCountSrc != nil {
+		lineCount = r.lineCountSrc.Load()
+	}
+
+	// Capture whether this is the very first render before updating state.
+	firstRender := r.prevRenderTime.IsZero()
+
+	// Compute rate since last render call.
+	var rate float64
+	if !firstRender {
+		dt := now.Sub(r.prevRenderTime).Seconds()
+		if dt > 0 && lineCount >= r.prevLineCount {
+			rate = float64(lineCount-r.prevLineCount) / dt
+		}
+	}
+
+	// Update throughput circular buffer (oldest→newest, pos is next write slot).
+	r.throughputBuf[r.throughputPos] = rate
+	r.throughputPos = (r.throughputPos + 1) % len(r.throughputBuf)
+	if r.throughputPos == 0 {
+		r.throughputFull = true
+	}
+	r.prevLineCount = lineCount
+	r.prevRenderTime = now
+
+	if r.eofReceived {
+		buf = append(buf, "\x1b[2m✓ complete  \x1b[0m"...)
+		buf = appendCommaUint64(buf, lineCount)
+		buf = append(buf, " lines"...)
+		if rate > 0 {
+			buf = append(buf, "  "...)
+			buf = appendRatePerSec(buf, rate)
+		}
+		return buf
+	}
+
+	// Idle: no new lines since last render (not applicable on the first render).
+	idle := !firstRender && rate == 0
+
+	// Advance spinner only when data is flowing; freeze it when idle.
+	if !idle {
+		r.spinnerIdx = (r.spinnerIdx + 1) % len(statusSpinnerFrames)
+	}
+	spinner := statusSpinnerFrames[r.spinnerIdx]
+
+	if idle {
+		buf = append(buf, "\x1b[33m"...)
+	} else {
+		buf = append(buf, "\x1b[32m"...)
+	}
+	buf = append(buf, spinner...)
+	buf = append(buf, "\x1b[0m "...)
+
+	if idle {
+		buf = append(buf, "waiting  "...)
+	} else {
+		buf = append(buf, "streaming  "...)
+	}
+
+	buf = appendCommaUint64(buf, lineCount)
+	buf = append(buf, " lines  "...)
+
+	// Sparkline of recent throughput.
+	n := r.throughputPos
+	if r.throughputFull {
+		n = len(r.throughputBuf)
+	}
+	if n > 0 {
+		maxRate := 0.0
+		for _, v := range r.throughputBuf {
+			if v > maxRate {
+				maxRate = v
+			}
+		}
+		pos := r.throughputPos
+		for i := 0; i < n; i++ {
+			idx := (pos - n + i + len(r.throughputBuf)) % len(r.throughputBuf)
+			v := r.throughputBuf[idx]
+			level := 0
+			if maxRate > 0 {
+				level = int(v/maxRate*float64(len(sparklineTicks)-1) + 0.5)
+			}
+			buf = append(buf, sparklineTicks[level]...)
+		}
+		buf = append(buf, "  "...)
+	}
+
+	buf = appendRatePerSec(buf, rate)
+	return buf
+}
+
+// appendCommaUint64 formats n with thousands-separator commas.
+func appendCommaUint64(buf []byte, n uint64) []byte {
+	s := strconv.FormatUint(n, 10)
+	start := len(s) % 3
+	if start > 0 {
+		buf = append(buf, s[:start]...)
+	}
+	for i := start; i < len(s); i += 3 {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, s[i:i+3]...)
+	}
+	return buf
+}
+
+// appendRatePerSec formats rate as "N/s", "N.Nk/s" or "N.NM/s".
+func appendRatePerSec(buf []byte, rate float64) []byte {
+	switch {
+	case rate >= 1e6:
+		buf = strconv.AppendFloat(buf, rate/1e6, 'f', 1, 64)
+		buf = append(buf, "M/s"...)
+	case rate >= 1e3:
+		buf = strconv.AppendFloat(buf, rate/1e3, 'f', 1, 64)
+		buf = append(buf, "k/s"...)
+	default:
+		buf = strconv.AppendFloat(buf, rate, 'f', 0, 64)
+		buf = append(buf, "/s"...)
+	}
+	return buf
 }
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -438,7 +595,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 	results := finalizeFromShards(shards, opts)
 	if opts.flushEvery > 0 {
-		if len(results) > 0 && !renderer.matches(results) {
+		renderer.SetEOF()
+		if renderer.initialized || len(results) > 0 {
 			if renderErr := renderer.render(results); renderErr != nil {
 				fmt.Fprintf(stderr, "tuniq: write error: %v\n", renderErr)
 				return 1
@@ -482,6 +640,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 		stats:            defaults.Stats,
 		statsRSS:         defaults.StatsRSS,
 		progress:         defaults.Progress,
+		statusBar:        defaults.StatusBar,
 		workers:          defaults.Workers,
 		memoryLimitBytes: defaults.MemoryLimitBytes,
 		progressEvery:    defaults.ProgressEvery,
@@ -493,6 +652,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	var csvOut bool
 	var jsonOut bool
 	var noCount bool
+	var noStatus bool
 
 	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
 	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
@@ -503,6 +663,8 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
 	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
 	fs.BoolVar(&noCount, "no-count", false, "hide counts")
+	fs.BoolVar(&opts.statusBar, "status", opts.statusBar, "show the live status bar (spinner, rate, sparkline)")
+	fs.BoolVar(&noStatus, "no-status", false, "hide the live status bar (spinner, rate, sparkline)")
 	fs.BoolVar(&csvOut, "csv", false, "output CSV")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON")
 	fs.BoolVar(&opts.stats, "stats", opts.stats, "write processing statistics to stderr")
@@ -539,6 +701,9 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	}
 	if noCount {
 		opts.showCount = false
+	}
+	if noStatus {
+		opts.statusBar = false
 	}
 	modeFlagCount := 0
 	csvSet, jsonSet := false, false
@@ -599,6 +764,9 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	}
 
 	lineCounts := atomic.Uint64{}
+	if renderer != nil && opts.statusBar {
+		renderer.SetLineCountSource(&lineCounts)
+	}
 	peakHeapSys := atomic.Uint64{}
 	peakRSS := atomic.Uint64{}
 	rssAvailable := atomic.Bool{}
@@ -1595,6 +1763,15 @@ func (r *liveRenderer) render(entries []entry) error {
 				return err
 			}
 		}
+		// Status bar sits on the line immediately after the last entry.
+		if r.lineCountSrc != nil {
+			r.frameBuf = r.frameBuf[:0]
+			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
+			r.frameBuf = r.appendStatusLine(r.frameBuf)
+			if _, err := bw.Write(r.frameBuf); err != nil {
+				return err
+			}
+		}
 		r.prevEntries = append(r.prevEntries[:0], entries...)
 		r.initialized = true
 		return bw.Flush()
@@ -1638,6 +1815,20 @@ func (r *liveRenderer) render(entries []entry) error {
 		r.dirtyBitmap[word] |= 1 << bit
 	}
 	if !changed {
+		// Entries unchanged — still refresh the status bar so the spinner and
+		// rate stay up-to-date.
+		if r.lineCountSrc != nil {
+			if err := writeCursorHomeLine(bw, len(r.prevEntries)+1, r.ansiScratch[:0]); err != nil {
+				return err
+			}
+			r.frameBuf = r.frameBuf[:0]
+			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
+			r.frameBuf = r.appendStatusLine(r.frameBuf)
+			if _, err := bw.Write(r.frameBuf); err != nil {
+				return err
+			}
+			return bw.Flush()
+		}
 		return nil
 	}
 
@@ -1668,26 +1859,29 @@ func (r *liveRenderer) render(entries []entry) error {
 		}
 	}
 
-	if err := writeCursorHomeLine(bw, len(entries)+1, r.ansiScratch[:0]); err != nil {
+	// When the number of entries shrinks, the old status bar sits below the new
+	// last entry and must be cleared before we write it at the new position.
+	oldStatusLine := len(r.prevEntries) + 1
+	newStatusLine := len(entries) + 1
+	if oldStatusLine != newStatusLine && oldStatusLine > len(entries) {
+		if err := writeCursorClearLine(bw, oldStatusLine, r.ansiScratch[:0]); err != nil {
+			return err
+		}
+	}
+
+	if err := writeCursorHomeLine(bw, newStatusLine, r.ansiScratch[:0]); err != nil {
 		return err
+	}
+	if r.lineCountSrc != nil {
+		r.frameBuf = r.frameBuf[:0]
+		r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
+		r.frameBuf = r.appendStatusLine(r.frameBuf)
+		if _, err := bw.Write(r.frameBuf); err != nil {
+			return err
+		}
 	}
 	r.prevEntries = append(r.prevEntries[:0], entries...)
 	return bw.Flush()
-}
-
-func (r *liveRenderer) matches(entries []entry) bool {
-	if !r.initialized {
-		return false
-	}
-	if len(r.prevEntries) != len(entries) {
-		return false
-	}
-	for i := range entries {
-		if r.prevEntries[i].count != entries[i].count || r.prevEntries[i].value != entries[i].value {
-			return false
-		}
-	}
-	return true
 }
 
 func writeRenderedEntry(w io.Writer, e entry, showCount bool) error {

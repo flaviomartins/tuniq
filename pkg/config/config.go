@@ -22,6 +22,7 @@ type Defaults struct {
 	Stats            bool
 	StatsRSS         bool
 	Progress         bool
+	StatusBar        bool
 	Workers          int
 	MemoryLimitBytes uint64
 	ProgressEvery    uint64
@@ -33,6 +34,7 @@ func DefaultSettings() Defaults {
 	return Defaults{
 		TopN:            -1,
 		ShowCount:       true,
+		StatusBar:       true,
 		Workers:         runtime.GOMAXPROCS(0),
 		ProgressEvery:   1_000_000,
 		OutputMode:      output.ModePlain,
@@ -173,6 +175,12 @@ func assignSetting(settings *Defaults, key, value string) error {
 			return fmt.Errorf("invalid bool for progress: %w", err)
 		}
 		settings.Progress = v
+	case "status":
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid bool for status: %w", err)
+		}
+		settings.StatusBar = v
 	case "workers":
 		v, err := strconv.Atoi(value)
 		if err != nil {

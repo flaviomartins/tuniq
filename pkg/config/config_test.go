@@ -108,3 +108,57 @@ func TestLoadDefaultSearchesHomeAndXDG(t *testing.T) {
 		t.Fatalf("expected XDG config to override home config, got top_n=%d", settings.TopN)
 	}
 }
+
+func TestStatusBarConfigKey(t *testing.T) {
+	tempDir := t.TempDir()
+	isolateConfigEnv(t, tempDir)
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	// Default is true.
+	settings, err := LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault failed: %v", err)
+	}
+	if !settings.StatusBar {
+		t.Fatal("expected StatusBar default to be true")
+	}
+
+	// status=false disables it.
+	if err := os.WriteFile(".tuniqrc", []byte("status=false\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	settings, err = LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault failed: %v", err)
+	}
+	if settings.StatusBar {
+		t.Fatal("expected StatusBar to be false after status=false in config")
+	}
+
+	// status=true re-enables it.
+	if err := os.WriteFile(".tuniqrc", []byte("status=true\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	settings, err = LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault failed: %v", err)
+	}
+	if !settings.StatusBar {
+		t.Fatal("expected StatusBar to be true after status=true in config")
+	}
+
+	// Invalid value returns an error.
+	if err := os.WriteFile(".tuniqrc", []byte("status=maybe\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	if _, err := LoadDefault(); err == nil {
+		t.Fatal("expected error for invalid status value")
+	}
+}

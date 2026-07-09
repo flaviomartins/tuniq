@@ -50,6 +50,8 @@ Flags:
 - `-c` show counts (default true)
 - `--no-count` hide counts
 - `-u N`, `--update-every N` live updates every N lines (plain output only)
+- `--no-status` hide the live status bar (spinner, rate, sparkline)
+- `--status` show the live status bar (overrides `status=false` in config)
 - `--csv` CSV output
 - `--json` JSON output
 - `--workers N` worker shards (default: `GOMAXPROCS`)
@@ -118,6 +120,7 @@ progress_every=500000
 progress_every_seconds=0
 stats=false
 stats_rss=false
+status=true
 memory_limit_bytes=0
 ```
 
@@ -147,6 +150,34 @@ Ordering is deterministic:
 
 1. count descending (or ascending with `-r`)
 2. value alphabetical as tiebreak
+
+### Live mode status bar
+
+When live updates are enabled (`-u`), a status bar appears below the top-N table:
+
+```text
+15234 apple
+11201 orange
+ 9321 banana
+ 8102 grape
+ 7654 mango
+⠹ streaming  1,250,000 lines  ▁▂▄▅▇▇█▆  45.2k/s
+```
+
+The status bar updates on every render tick:
+
+| Element | Meaning |
+|---|---|
+| `⠹` (spinning) | Data is actively arriving — spinner advances with each update |
+| `⠹` (frozen) | Stream is open but silent — no EOF received yet |
+| `streaming` | Lines are flowing in (green) |
+| `waiting` | No new lines since last render (yellow) |
+| `✓ complete` | EOF received — final counts are exact (dim) |
+| `1,250,000 lines` | Total lines processed so far |
+| `▁▂▄▅▇▇█▆` | 8-sample rolling throughput sparkline |
+| `45.2k/s` | Current ingest rate |
+
+Use `--no-status` (or `status=false` in config) to hide the bar entirely.
 
 ## Performance and memory
 
