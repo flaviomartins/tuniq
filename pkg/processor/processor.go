@@ -750,7 +750,6 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	var secondsInterval time.Duration
 	var liveRenderCtrl *liveRenderControl
 	var lastUpdate time.Time
-	var lastStatusRender time.Time
 	nextLineUpdate := uint64(0)
 	if updateEnabled {
 		secondsInterval = durationFromSeconds(opts.progressSeconds)
@@ -787,6 +786,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	snapshotShards := make([][]entry, workerCount)
 	snapshotDirty := make([]atomic.Bool, workerCount)
 	renderReqCh := make(chan struct{}, 1)
+	statusRenderReqCh := make(chan struct{}, 1)
 	renderErrCh := make(chan error, 1)
 	renderDurCh := make(chan time.Duration, 1)
 	resultCh := make(chan workerResult, workerCount)
@@ -808,7 +808,6 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			return nil
 		}
 		if enqueueRenderRequest(renderReqCh) {
-			lastStatusRender = now
 			if liveRenderCtrl != nil {
 				liveRenderCtrl.recordRender(now, 0)
 			}
@@ -959,21 +958,41 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			var snapshotMergeBuf []entry
 			var snapshotNodeBuf []mergeNode
 			var snapshotRequested []bool
-			for range renderReqCh {
+			fullReqCh := renderReqCh
+			statusReqCh := statusRenderReqCh
+			for fullReqCh != nil || statusReqCh != nil {
 				renderStart := time.Now()
-				snapshotMergeBuf, snapshotNodeBuf, snapshotRequested = snapshotEntriesFromWorkers(
-					snapshotReqChans,
-					snapshotResponses,
-					snapshotShards,
-					snapshotDirty,
-					opts,
-					snapshotMergeBuf,
-					snapshotNodeBuf,
-					snapshotRequested,
-				)
-				if err := renderer.render(snapshotMergeBuf); err != nil {
+				var renderErr error
+				select {
+				case _, ok := <-fullReqCh:
+					if !ok {
+						fullReqCh = nil
+						continue
+					}
+					snapshotMergeBuf, snapshotNodeBuf, snapshotRequested = snapshotEntriesFromWorkers(
+						snapshotReqChans,
+						snapshotResponses,
+						snapshotShards,
+						snapshotDirty,
+						opts,
+						snapshotMergeBuf,
+						snapshotNodeBuf,
+						snapshotRequested,
+					)
+					renderErr = renderer.render(snapshotMergeBuf)
+				case _, ok := <-statusReqCh:
+					if !ok {
+						statusReqCh = nil
+						continue
+					}
+					if !renderer.initialized {
+						continue
+					}
+					renderErr = renderer.render(snapshotMergeBuf)
+				}
+				if renderErr != nil {
 					select {
-					case renderErrCh <- err:
+					case renderErrCh <- renderErr:
 					default:
 					}
 					return
@@ -981,6 +1000,27 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 				select {
 				case renderDurCh <- time.Since(renderStart):
 				default:
+				}
+			}
+		}()
+	}
+	var statusWG sync.WaitGroup
+	statusRenderStopCh := make(chan struct{})
+	if liveMode && opts.statusBar {
+		statusWG.Add(1)
+		go func() {
+			defer statusWG.Done()
+			ticker := time.NewTicker(liveStatusRenderInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-statusRenderStopCh:
+					return
+				case <-ticker.C:
+					if lineCounts.Load() == 0 {
+						continue
+					}
+					enqueueRenderRequest(statusRenderReqCh)
 				}
 			}
 		}()
@@ -1031,20 +1071,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			workerFail,
 		)
 	} else {
-		var onIdleTick func() error
-		if liveMode && opts.statusBar {
-			onIdleTick = func() error {
-				if lineCounts.Load() == 0 {
-					return nil
-				}
-				now := time.Now()
-				if !lastStatusRender.IsZero() && now.Sub(lastStatusRender) < liveStatusRenderInterval {
-					return nil
-				}
-				return requestLiveRender(now, false)
-			}
-		}
-		sendErr = streamLines(ctx, inputs, onIdleTick, func(line []byte) error {
+		sendErr = streamLines(ctx, inputs, func(line []byte) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -1075,14 +1102,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 				return err
 			}
 			forceRender := liveMode && opts.statusBar && lines == 1
-			emitStatusRender := false
-			if liveMode && opts.statusBar && !forceRender {
-				if now.IsZero() {
-					now = time.Now()
-				}
-				emitStatusRender = lastStatusRender.IsZero() || now.Sub(lastStatusRender) >= liveStatusRenderInterval
-			}
-			if liveMode && (emitUpdate || forceRender || emitStatusRender) {
+			if liveMode && (emitUpdate || forceRender) {
 				if err := requestLiveRender(now, forceRender); err != nil {
 					return err
 				}
@@ -1107,6 +1127,9 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 		}
 	}
 	if liveMode {
+		close(statusRenderStopCh)
+		statusWG.Wait()
+		close(statusRenderReqCh)
 		close(renderReqCh)
 		renderWG.Wait()
 		select {
@@ -1261,159 +1284,60 @@ func liveSnapshotSelection(opts options) (topN int, showAll bool) {
 	return opts.topN, opts.showAll
 }
 
-type streamLineEvent struct {
-	line []byte
-	err  error
-}
-
-func streamLines(ctx context.Context, inputs []io.ReadCloser, onIdleTick func() error, emit func([]byte) error) error {
+func streamLines(ctx context.Context, inputs []io.ReadCloser, emit func([]byte) error) error {
 	for _, input := range inputs {
-		events := make(chan streamLineEvent)
-		acks := make(chan struct{})
-		stop := make(chan struct{})
-		go pumpStreamLines(ctx, input, events, acks, stop)
-
-		var ticker *time.Ticker
-		var tickerCh <-chan time.Time
-		if onIdleTick != nil {
-			ticker = time.NewTicker(liveStatusRenderInterval)
-			tickerCh = ticker.C
-		}
-
-		var readErr error
-	readLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				readErr = ctx.Err()
-				break readLoop
-			case <-tickerCh:
-				if onIdleTick == nil {
+		reader := acquireStreamReader(input)
+		readErr := func() error {
+			var longLine []byte
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+				fragment, err := reader.ReadSlice('\n')
+				if errors.Is(err, bufio.ErrBufferFull) {
+					longLine = append(longLine, fragment...)
 					continue
 				}
-				if err := onIdleTick(); err != nil {
-					readErr = err
-					break readLoop
-				}
-			case event, ok := <-events:
-				if !ok {
-					break readLoop
-				}
-				if event.err != nil {
-					if !errors.Is(event.err, io.EOF) {
-						readErr = event.err
-					}
-					break readLoop
-				}
-				if emitErr := emit(event.line); emitErr != nil {
-					readErr = emitErr
-					break readLoop
-				}
-				select {
-				case acks <- struct{}{}:
-				case <-ctx.Done():
-					readErr = ctx.Err()
-					break readLoop
-				}
-			}
-		}
 
-		close(stop)
-		close(acks)
-		if ticker != nil {
-			ticker.Stop()
-		}
+				if len(fragment) > 0 {
+					if len(longLine) > 0 {
+						longLine = append(longLine, fragment...)
+						line := trimLineEnding(longLine)
+						if emitErr := emit(line); emitErr != nil {
+							return emitErr
+						}
+						longLine = longLine[:0]
+					} else {
+						line := trimLineEnding(fragment)
+						if emitErr := emit(line); emitErr != nil {
+							return emitErr
+						}
+					}
+				} else if len(longLine) > 0 && errors.Is(err, io.EOF) {
+					line := trimLineEnding(longLine)
+					if emitErr := emit(line); emitErr != nil {
+						return emitErr
+					}
+					longLine = longLine[:0]
+				}
+				if err == nil {
+					continue
+				}
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return err
+			}
+			return nil
+		}()
+		releaseStreamReader(reader)
 		if readErr != nil {
 			return readErr
 		}
 	}
 	return nil
-}
-
-func pumpStreamLines(
-	ctx context.Context,
-	input io.Reader,
-	events chan<- streamLineEvent,
-	acks <-chan struct{},
-	stop <-chan struct{},
-) {
-	reader := acquireStreamReader(input)
-	defer releaseStreamReader(reader)
-	defer close(events)
-
-	var longLine []byte
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-stop:
-			return
-		default:
-		}
-		fragment, err := reader.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) {
-			longLine = append(longLine, fragment...)
-			continue
-		}
-
-		if len(fragment) > 0 {
-			var line []byte
-			if len(longLine) > 0 {
-				longLine = append(longLine, fragment...)
-				line = trimLineEnding(longLine)
-			} else {
-				line = trimLineEnding(fragment)
-			}
-			if !sendStreamLineEvent(ctx, stop, events, acks, streamLineEvent{line: line}) {
-				return
-			}
-			if len(longLine) > 0 {
-				longLine = longLine[:0]
-			}
-		} else if len(longLine) > 0 && errors.Is(err, io.EOF) {
-			line := trimLineEnding(longLine)
-			if !sendStreamLineEvent(ctx, stop, events, acks, streamLineEvent{line: line}) {
-				return
-			}
-			longLine = longLine[:0]
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			return
-		}
-		select {
-		case events <- streamLineEvent{err: err}:
-		case <-ctx.Done():
-		case <-stop:
-		}
-		return
-	}
-}
-
-func sendStreamLineEvent(
-	ctx context.Context,
-	stop <-chan struct{},
-	events chan<- streamLineEvent,
-	acks <-chan struct{},
-	event streamLineEvent,
-) bool {
-	select {
-	case events <- event:
-	case <-ctx.Done():
-		return false
-	case <-stop:
-		return false
-	}
-	select {
-	case _, ok := <-acks:
-		return ok
-	case <-ctx.Done():
-		return false
-	case <-stop:
-		return false
-	}
 }
 
 func streamLinesDispatch(
