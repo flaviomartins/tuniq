@@ -370,6 +370,136 @@ func TestRunLiveRefreshShowsStreamingStatusBetweenSparseFlushes(t *testing.T) {
 	}
 }
 
+func TestRunLiveRefreshKeepsRankedListFrozenBetweenSparseStatusTicks(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for _, line := range []string{"a\n", "b\n", "a\n", "c\n"} {
+			<-ticker.C
+			if _, err := io.WriteString(inW, line); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		current := out.String()
+		if strings.Contains(current, "waiting") {
+			if strings.Contains(current, "1 a") && !strings.Contains(current, "2 a") && !strings.Contains(current, "1 b") {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected status-only refreshes to keep the ranked list frozen between sparse full redraws, got output=%q stderr=%q", current, errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := inW.Close(); err != nil {
+		t.Fatalf("failed to close input: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
+func TestRunLiveRefreshUpdatesRankedListOnSecondsCadence(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--progress-every", "0", "--progress-every-seconds", "1", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		defer func() {
+			_ = inW.Close()
+		}()
+		input := []string{"a\n", "b\n", "a\n", "b\n", "c\n", "d\n"}
+		for _, line := range input {
+			<-ticker.C
+			if _, err := io.WriteString(inW, line); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		current := out.String()
+		if strings.Contains(current, "2 a") && strings.Contains(current, "2 b") && strings.Contains(current, "1 c") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected ranked list refresh on seconds cadence before EOF, got output=%q stderr=%q", current, errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
+func TestRunLiveRefreshShowsWaitingBeforeFirstLine(t *testing.T) {
+	inR, inW := io.Pipe()
+	var out lockedBuffer
+	var errOut lockedBuffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-u", "1000", "--workers", "8", "-n", "5"}, inR, &out, &errOut)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		current := out.String()
+		if strings.Contains(current, "waiting") && strings.Contains(current, "0 lines") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected waiting status before first line, got output=%q stderr=%q", current, errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := inW.Close(); err != nil {
+		t.Fatalf("failed to close input: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run did not finish")
+	}
+}
+
 func TestRunLiveRefreshShowsStreamingStatusSoonAfterFirstLine(t *testing.T) {
 	inR, inW := io.Pipe()
 	var out lockedBuffer
