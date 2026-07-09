@@ -164,7 +164,9 @@ When live updates are enabled (`-u`), a status bar appears below the top-N table
 ⠹ streaming  1,250,000 lines  ▁▂▄▅▇▇█▆  45.2k/s
 ```
 
-The status bar updates on every render tick:
+The status bar updates on every render tick. When table refreshes are sparse,
+`tuniq` still refreshes the status bar about once per second so active streams
+do not look stalled and idle open streams can flip to `waiting`:
 
 | Element | Meaning |
 |---|---|
