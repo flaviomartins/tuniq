@@ -397,7 +397,7 @@ func (r *liveRenderer) SetEOF() {
 
 // appendStatusLine appends a one-line status bar to buf and returns it.
 // The bar shows: spinner · state · line count · sparkline · rate.
-func (r *liveRenderer) appendStatusLine(buf []byte) []byte {
+func (r *liveRenderer) appendStatusLine(buf []byte, statusOnly bool) []byte {
 	now := time.Now()
 
 	var lineCount uint64
@@ -437,8 +437,9 @@ func (r *liveRenderer) appendStatusLine(buf []byte) []byte {
 		return buf
 	}
 
-	// Idle: no new lines since last render (not applicable on the first render).
-	idle := !firstRender && rate == 0
+	// Idle: no new lines since last render. A status-only render before the first
+	// line should show "waiting" rather than "streaming 0 lines".
+	idle := (!firstRender && rate == 0) || (statusOnly && lineCount == 0)
 
 	// Advance spinner only when data is flowing; freeze it when idle.
 	if !idle {
@@ -985,10 +986,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 						statusReqCh = nil
 						continue
 					}
-					if !renderer.initialized {
-						continue
-					}
-					renderErr = renderer.render(snapshotMergeBuf)
+					renderErr = renderer.renderStatusOnly(snapshotMergeBuf)
 				}
 				if renderErr != nil {
 					select {
@@ -1017,9 +1015,6 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 				case <-statusRenderStopCh:
 					return
 				case <-ticker.C:
-					if lineCounts.Load() == 0 {
-						continue
-					}
 					enqueueRenderRequest(statusRenderReqCh)
 				}
 			}
@@ -1103,7 +1098,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			}
 			forceRender := liveMode && opts.statusBar && lines == 1
 			if liveMode && (emitUpdate || forceRender) {
-				if err := requestLiveRender(now, forceRender); err != nil {
+				if err := requestLiveRender(now, true); err != nil {
 					return err
 				}
 			}
@@ -1803,21 +1798,31 @@ func mergeSortedShardsInto(shards [][]entry, reverse bool, limit int, allMode bo
 }
 
 func (r *liveRenderer) render(entries []entry) error {
+	return r.renderWithMode(entries, false)
+}
+
+func (r *liveRenderer) renderStatusOnly(entries []entry) error {
+	return r.renderWithMode(entries, true)
+}
+
+func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	bw := r.bw
 	if !r.initialized {
 		if _, err := bw.WriteString("\x1b[2J\x1b[H"); err != nil {
 			return err
 		}
-		for _, e := range entries {
-			if err := writeRenderedEntry(bw, e, r.showCount); err != nil {
-				return err
+		if !statusOnly {
+			for _, e := range entries {
+				if err := writeRenderedEntry(bw, e, r.showCount); err != nil {
+					return err
+				}
 			}
 		}
 		// Status bar sits on the line immediately after the last entry.
 		if r.lineCountSrc != nil {
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
-			r.frameBuf = r.appendStatusLine(r.frameBuf)
+			r.frameBuf = r.appendStatusLine(r.frameBuf, statusOnly)
 			if _, err := bw.Write(r.frameBuf); err != nil {
 				return err
 			}
@@ -1825,6 +1830,22 @@ func (r *liveRenderer) render(entries []entry) error {
 		r.prevEntries = append(r.prevEntries[:0], entries...)
 		r.initialized = true
 		return bw.Flush()
+	}
+
+	if statusOnly {
+		if r.lineCountSrc != nil {
+			if err := writeCursorHomeLine(bw, len(r.prevEntries)+1, r.ansiScratch[:0]); err != nil {
+				return err
+			}
+			r.frameBuf = r.frameBuf[:0]
+			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
+			r.frameBuf = r.appendStatusLine(r.frameBuf, true)
+			if _, err := bw.Write(r.frameBuf); err != nil {
+				return err
+			}
+			return bw.Flush()
+		}
+		return nil
 	}
 
 	maxLines := len(entries)
@@ -1873,7 +1894,7 @@ func (r *liveRenderer) render(entries []entry) error {
 			}
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
-			r.frameBuf = r.appendStatusLine(r.frameBuf)
+			r.frameBuf = r.appendStatusLine(r.frameBuf, false)
 			if _, err := bw.Write(r.frameBuf); err != nil {
 				return err
 			}
@@ -1925,7 +1946,7 @@ func (r *liveRenderer) render(entries []entry) error {
 	if r.lineCountSrc != nil {
 		r.frameBuf = r.frameBuf[:0]
 		r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
-		r.frameBuf = r.appendStatusLine(r.frameBuf)
+		r.frameBuf = r.appendStatusLine(r.frameBuf, false)
 		if _, err := bw.Write(r.frameBuf); err != nil {
 			return err
 		}
