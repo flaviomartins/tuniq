@@ -404,15 +404,15 @@ func (r *liveRenderer) appendStatusLine(buf []byte) []byte {
 		lineCount = r.lineCountSrc.Load()
 	}
 
+	// Capture whether this is the very first render before updating state.
+	firstRender := r.prevRenderTime.IsZero()
+
 	// Compute rate since last render call.
 	var rate float64
-	if !r.prevRenderTime.IsZero() {
+	if !firstRender {
 		dt := now.Sub(r.prevRenderTime).Seconds()
-		if dt > 0 {
-			delta := lineCount - r.prevLineCount
-			if lineCount >= r.prevLineCount {
-				rate = float64(delta) / dt
-			}
+		if dt > 0 && lineCount >= r.prevLineCount {
+			rate = float64(lineCount-r.prevLineCount) / dt
 		}
 	}
 
@@ -436,11 +436,13 @@ func (r *liveRenderer) appendStatusLine(buf []byte) []byte {
 		return buf
 	}
 
-	// Detect idle: no new lines since last render and more than one second elapsed.
-	idle := !r.prevRenderTime.IsZero() && rate == 0 && !r.prevRenderTime.Equal(now)
+	// Idle: no new lines since last render (not applicable on the first render).
+	idle := !firstRender && rate == 0
 
-	// Advance spinner and choose color.
-	r.spinnerIdx = (r.spinnerIdx + 1) % len(statusSpinnerFrames)
+	// Advance spinner only when data is flowing; freeze it when idle.
+	if !idle {
+		r.spinnerIdx = (r.spinnerIdx + 1) % len(statusSpinnerFrames)
+	}
 	spinner := statusSpinnerFrames[r.spinnerIdx]
 
 	if idle {
@@ -594,9 +596,11 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	results := finalizeFromShards(shards, opts)
 	if opts.flushEvery > 0 {
 		renderer.SetEOF()
-		if renderErr := renderer.render(results); renderErr != nil {
-			fmt.Fprintf(stderr, "tuniq: write error: %v\n", renderErr)
-			return 1
+		if renderer.initialized || len(results) > 0 {
+			if renderErr := renderer.render(results); renderErr != nil {
+				fmt.Fprintf(stderr, "tuniq: write error: %v\n", renderErr)
+				return 1
+			}
 		}
 	} else {
 		if writeErr := writeOutput(stdout, results, opts); writeErr != nil {
@@ -659,6 +663,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
 	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
 	fs.BoolVar(&noCount, "no-count", false, "hide counts")
+	fs.BoolVar(&opts.statusBar, "status", opts.statusBar, "show the live status bar (spinner, rate, sparkline)")
 	fs.BoolVar(&noStatus, "no-status", false, "hide the live status bar (spinner, rate, sparkline)")
 	fs.BoolVar(&csvOut, "csv", false, "output CSV")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON")
@@ -1877,21 +1882,6 @@ func (r *liveRenderer) render(entries []entry) error {
 	}
 	r.prevEntries = append(r.prevEntries[:0], entries...)
 	return bw.Flush()
-}
-
-func (r *liveRenderer) matches(entries []entry) bool {
-	if !r.initialized {
-		return false
-	}
-	if len(r.prevEntries) != len(entries) {
-		return false
-	}
-	for i := range entries {
-		if r.prevEntries[i].count != entries[i].count || r.prevEntries[i].value != entries[i].value {
-			return false
-		}
-	}
-	return true
 }
 
 func writeRenderedEntry(w io.Writer, e entry, showCount bool) error {

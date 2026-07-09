@@ -51,6 +51,7 @@ Flags:
 - `--no-count` hide counts
 - `-u N`, `--update-every N` live updates every N lines (plain output only)
 - `--no-status` hide the live status bar (spinner, rate, sparkline)
+- `--status` show the live status bar (overrides `status=false` in config)
 - `--csv` CSV output
 - `--json` JSON output
 - `--workers N` worker shards (default: `GOMAXPROCS`)
