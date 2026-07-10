@@ -39,6 +39,7 @@ func TestLoadDefaultParsesDotTuniqrc(t *testing.T) {
 	}
 	content := "" +
 		"top_n=10\n" +
+		"max_lines=4\n" +
 		"workers=3\n" +
 		"progress=true\n" +
 		"progress_every=200\n" +
@@ -51,7 +52,7 @@ func TestLoadDefaultParsesDotTuniqrc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDefault failed: %v", err)
 	}
-	if settings.TopN != 10 || settings.Workers != 3 || !settings.Progress || settings.ProgressEvery != 200 {
+	if settings.TopN != 10 || settings.MaxLines != 4 || settings.Workers != 3 || !settings.Progress || settings.ProgressEvery != 200 {
 		t.Fatalf("unexpected parsed settings: %+v", settings)
 	}
 	if settings.OutputMode != output.ModeCSV {

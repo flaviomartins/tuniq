@@ -206,6 +206,49 @@ func TestRunTopN(t *testing.T) {
 	}
 }
 
+func TestRunMaxLinesStopsAfterN(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	input := "a\nb\nc\na\n"
+	code := run([]string{"--max-lines", "2"}, strings.NewReader(input), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+	if out.String() != "1 a\n1 b\n" {
+		t.Fatalf("unexpected output with max-lines: %q", out.String())
+	}
+}
+
+func TestRunMaxLinesShortFlagStopsAfterN(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	input := "a\nb\nc\na\n"
+	code := run([]string{"-l", "2"}, strings.NewReader(input), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+	if out.String() != "1 a\n1 b\n" {
+		t.Fatalf("unexpected output with -l: %q", out.String())
+	}
+}
+
+func TestRunMaxLinesInLiveMode(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	input := "a\na\nb\nc\n"
+	code := run([]string{"--max-lines", "3", "-u", "1", "-n", "5"}, strings.NewReader(input), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, errOut.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "2 a") || !strings.Contains(got, "1 b") {
+		t.Fatalf("expected output to include only first three lines, got: %q", got)
+	}
+	if strings.Contains(got, "1 c") {
+		t.Fatalf("expected max-lines to stop before c was read, got: %q", got)
+	}
+}
+
 func TestRunReverseOrdering(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

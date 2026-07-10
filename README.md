@@ -48,6 +48,7 @@ If no files are provided, `tuniq` reads from stdin. Multiple files are processed
 Flags:
 
 - `-n N` top N entries
+- `-l N`, `--max-lines N` stop after reading N lines (0 means no limit)
 - `-a` show all entries
 - `-r` reverse ordering (ascending count)
 - `-c` show counts (default true)
@@ -112,6 +113,7 @@ Supported keys:
 
 ```ini
 top_n=20
+max_lines=0
 show_all=false
 reverse=false
 show_count=true
