@@ -1866,6 +1866,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		statusOnly = false
 	}
 	entries = r.capEntriesToTerminalHeight(entries)
+	prevEntries := r.capEntriesToTerminalHeight(r.prevEntries)
 
 	bw := r.bw
 	if !r.initialized {
@@ -1874,9 +1875,11 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		}
 		if !statusOnly {
 			r.frameBuf = r.frameBuf[:0]
-			for _, e := range entries {
+			for i, e := range entries {
 				r.frameBuf = appendRenderedEntryInlineBytesCapped(r.frameBuf, e, r.showCount, r.termWidth)
-				r.frameBuf = append(r.frameBuf, '\n')
+				if i+1 < len(entries) {
+					r.frameBuf = append(r.frameBuf, '\n')
+				}
 			}
 			if len(r.frameBuf) > 0 {
 				if _, err := bw.Write(r.frameBuf); err != nil {
@@ -1901,7 +1904,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 
 	if statusOnly {
 		if r.lineCountSrc != nil {
-			if err := writeCursorHomeLine(bw, len(r.prevEntries)+1, r.ansiScratch[:0]); err != nil {
+			if err := writeCursorHomeLine(bw, len(prevEntries)+1, r.ansiScratch[:0]); err != nil {
 				return err
 			}
 			r.frameBuf = r.frameBuf[:0]
@@ -1917,8 +1920,8 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	}
 
 	maxLines := len(entries)
-	if len(r.prevEntries) > maxLines {
-		maxLines = len(r.prevEntries)
+	if len(prevEntries) > maxLines {
+		maxLines = len(prevEntries)
 	}
 
 	bitmapWords := (maxLines + 63) / 64
@@ -1942,8 +1945,8 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	for i := 0; i < maxLines; i++ {
 		var prev entry
 		prevOK := false
-		if i < len(r.prevEntries) {
-			prev = r.prevEntries[i]
+		if i < len(prevEntries) {
+			prev = prevEntries[i]
 			prevOK = true
 		}
 		var curr entry
@@ -1965,7 +1968,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		// Entries unchanged — still refresh the status bar so the spinner and
 		// rate stay up-to-date.
 		if r.lineCountSrc != nil {
-			if err := writeCursorHomeLine(bw, len(r.prevEntries)+1, r.ansiScratch[:0]); err != nil {
+			if err := writeCursorHomeLine(bw, len(prevEntries)+1, r.ansiScratch[:0]); err != nil {
 				return err
 			}
 			r.frameBuf = r.frameBuf[:0]
@@ -2009,7 +2012,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 
 	// When the number of entries shrinks, the old status bar sits below the new
 	// last entry and must be cleared before we write it at the new position.
-	oldStatusLine := len(r.prevEntries) + 1
+	oldStatusLine := len(prevEntries) + 1
 	newStatusLine := len(entries) + 1
 	if oldStatusLine != newStatusLine && oldStatusLine > len(entries) {
 		if err := writeCursorClearLine(bw, oldStatusLine, r.ansiScratch[:0]); err != nil {
