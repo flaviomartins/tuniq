@@ -354,6 +354,29 @@ func TestLiveRendererCapsEntriesToTerminalHeight(t *testing.T) {
 	}
 }
 
+func TestLiveRendererInitWithoutStatusHasNoTrailingNewline(t *testing.T) {
+	var out bytes.Buffer
+	renderer := newLiveRenderer(&out, options{showCount: true})
+	renderer.getTerminalSize = func(io.Writer) (int, int, bool) {
+		// Tight viewport with no status bar.
+		return 80, 2, true
+	}
+
+	entries := []entry{
+		{count: 3, value: "alpha"},
+		{count: 2, value: "beta"},
+		{count: 1, value: "gamma"},
+	}
+	if err := renderer.render(entries); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+
+	got := out.String()
+	if strings.HasSuffix(got, "\n") {
+		t.Fatalf("expected no trailing newline on init render without status bar, got %q", got)
+	}
+}
+
 func TestRunLiveRefreshDeprecatedAliasStillWorks(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

@@ -1874,9 +1874,11 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		}
 		if !statusOnly {
 			r.frameBuf = r.frameBuf[:0]
-			for _, e := range entries {
+			for i, e := range entries {
 				r.frameBuf = appendRenderedEntryInlineBytesCapped(r.frameBuf, e, r.showCount, r.termWidth)
-				r.frameBuf = append(r.frameBuf, '\n')
+				if i+1 < len(entries) {
+					r.frameBuf = append(r.frameBuf, '\n')
+				}
 			}
 			if len(r.frameBuf) > 0 {
 				if _, err := bw.Write(r.frameBuf); err != nil {
