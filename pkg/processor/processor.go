@@ -311,16 +311,17 @@ var statusSpinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 var sparklineTicks = [...]string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
 
 type liveRenderer struct {
-	w                io.Writer
-	bw               *bufio.Writer
-	showCount        bool
-	termWidth        int
-	initialized      bool
-	prevEntries      []entry
-	ansiScratch      []byte
-	dirtyBitmap      []uint64
-	frameBuf         []byte
-	getTerminalWidth func(io.Writer) (int, bool)
+	w               io.Writer
+	bw              *bufio.Writer
+	showCount       bool
+	termWidth       int
+	termHeight      int
+	initialized     bool
+	prevEntries     []entry
+	ansiScratch     []byte
+	dirtyBitmap     []uint64
+	frameBuf        []byte
+	getTerminalSize func(io.Writer) (int, int, bool)
 
 	// status bar
 	lineCountSrc   *atomic.Uint64
@@ -380,12 +381,12 @@ func (c *liveRenderControl) recordRender(now time.Time, renderDuration time.Dura
 
 func newLiveRenderer(w io.Writer, opts options) *liveRenderer {
 	return &liveRenderer{
-		w:                w,
-		bw:               bufio.NewWriterSize(w, 256*1024),
-		showCount:        opts.showCount,
-		ansiScratch:      make([]byte, 0, 32),
-		frameBuf:         make([]byte, 0, 4096),
-		getTerminalWidth: terminalWidthFromWriter,
+		w:               w,
+		bw:              bufio.NewWriterSize(w, 256*1024),
+		showCount:       opts.showCount,
+		ansiScratch:     make([]byte, 0, 32),
+		frameBuf:        make([]byte, 0, 4096),
+		getTerminalSize: terminalSizeFromWriter,
 	}
 }
 
@@ -530,34 +531,53 @@ func appendRatePerSec(buf []byte, rate float64) []byte {
 	return buf
 }
 
-func terminalWidthFromWriter(w io.Writer) (int, bool) {
+func terminalSizeFromWriter(w io.Writer) (int, int, bool) {
 	fdWriter, ok := w.(interface{ Fd() uintptr })
 	if !ok {
-		return 0, false
+		return 0, 0, false
 	}
 	fd := int(fdWriter.Fd())
 	if !term.IsTerminal(fd) {
-		return 0, false
+		return 0, 0, false
 	}
-	width, _, err := term.GetSize(fd)
-	if err != nil || width <= 0 {
-		return 0, false
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 || height <= 0 {
+		return 0, 0, false
 	}
-	return width, true
+	return width, height, true
 }
 
-func (r *liveRenderer) refreshTerminalWidth() bool {
-	getWidth := r.getTerminalWidth
-	if getWidth == nil {
-		getWidth = terminalWidthFromWriter
+func (r *liveRenderer) refreshTerminalSize() (bool, bool) {
+	getSize := r.getTerminalSize
+	if getSize == nil {
+		getSize = terminalSizeFromWriter
 	}
-	width, ok := getWidth(r.w)
-	if !ok || width <= 0 {
-		width = 0
+	width, height, ok := getSize(r.w)
+	if !ok || width <= 0 || height <= 0 {
+		width, height = 0, 0
 	}
-	changed := width != r.termWidth
+	widthChanged := width != r.termWidth
+	heightChanged := height != r.termHeight
 	r.termWidth = width
-	return changed
+	r.termHeight = height
+	return widthChanged, heightChanged
+}
+
+func (r *liveRenderer) capEntriesToTerminalHeight(entries []entry) []entry {
+	if r.termHeight <= 0 {
+		return entries
+	}
+	maxRows := r.termHeight
+	if r.lineCountSrc != nil {
+		maxRows--
+	}
+	if maxRows < 0 {
+		maxRows = 0
+	}
+	if len(entries) > maxRows {
+		return entries[:maxRows]
+	}
+	return entries
 }
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -1841,10 +1861,11 @@ func (r *liveRenderer) renderStatusOnly(entries []entry) error {
 }
 
 func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
-	widthChanged := r.refreshTerminalWidth()
-	if statusOnly && widthChanged {
+	widthChanged, heightChanged := r.refreshTerminalSize()
+	if statusOnly && (widthChanged || heightChanged) {
 		statusOnly = false
 	}
+	entries = r.capEntriesToTerminalHeight(entries)
 
 	bw := r.bw
 	if !r.initialized {
@@ -1910,7 +1931,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	}
 
 	changed := false
-	if widthChanged {
+	if widthChanged || heightChanged {
 		changed = maxLines > 0
 		for i := 0; i < maxLines; i++ {
 			word := i >> 6
@@ -1940,7 +1961,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		bit := uint(i & 63)
 		r.dirtyBitmap[word] |= 1 << bit
 	}
-	if !changed && !widthChanged {
+	if !changed && !widthChanged && !heightChanged {
 		// Entries unchanged — still refresh the status bar so the spinner and
 		// rate stay up-to-date.
 		if r.lineCountSrc != nil {
