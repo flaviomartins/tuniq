@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -275,6 +276,81 @@ func TestRunLiveRefreshLongFlag(t *testing.T) {
 	}
 	if !strings.Contains(got, "2 a") || !strings.Contains(got, "1 b") {
 		t.Fatalf("expected final leaderboard in live output, got: %q", got)
+	}
+}
+
+func TestAppendRenderedEntryInlineBytesCapped(t *testing.T) {
+	got := string(appendRenderedEntryInlineBytesCapped(nil, entry{count: 12, value: "alphabet"}, true, 6))
+	if got != "12 alp" {
+		t.Fatalf("expected capped entry output, got %q", got)
+	}
+
+	got = string(appendRenderedEntryInlineBytesCapped(nil, entry{count: 1, value: "café"}, true, 6))
+	if got != "1 café" {
+		t.Fatalf("expected utf-8 aware capped output, got %q", got)
+	}
+}
+
+func TestLiveRendererResizeForcesFullRedrawOnStatusTick(t *testing.T) {
+	var out bytes.Buffer
+	renderer := newLiveRenderer(&out, options{showCount: true})
+	width := 6
+	height := 3
+	renderer.getTerminalSize = func(io.Writer) (int, int, bool) {
+		return width, height, true
+	}
+
+	var lines atomic.Uint64
+	lines.Store(1)
+	renderer.SetLineCountSource(&lines)
+
+	entries := []entry{{count: 1, value: "alphabet"}}
+	if err := renderer.render(entries); err != nil {
+		t.Fatalf("initial render failed: %v", err)
+	}
+	initial := out.String()
+	if !strings.Contains(initial, "1 alph") {
+		t.Fatalf("expected initial render to use narrow width, got %q", initial)
+	}
+
+	out.Reset()
+	width = 12
+	if err := renderer.renderStatusOnly(entries); err != nil {
+		t.Fatalf("status-only render failed: %v", err)
+	}
+	afterResize := out.String()
+	if !strings.Contains(afterResize, "1 alphabet") {
+		t.Fatalf("expected resize-triggered full redraw with expanded entry width, got %q", afterResize)
+	}
+}
+
+func TestLiveRendererCapsEntriesToTerminalHeight(t *testing.T) {
+	var out bytes.Buffer
+	renderer := newLiveRenderer(&out, options{showCount: true})
+	renderer.getTerminalSize = func(io.Writer) (int, int, bool) {
+		// 2 rows total with status bar enabled => only 1 data row can be shown.
+		return 80, 2, true
+	}
+
+	var lines atomic.Uint64
+	lines.Store(3)
+	renderer.SetLineCountSource(&lines)
+
+	entries := []entry{
+		{count: 3, value: "alpha"},
+		{count: 2, value: "beta"},
+		{count: 1, value: "gamma"},
+	}
+	if err := renderer.render(entries); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "3 alpha") {
+		t.Fatalf("expected top row to be rendered, got %q", got)
+	}
+	if strings.Contains(got, "2 beta") || strings.Contains(got, "1 gamma") {
+		t.Fatalf("expected entries beyond visible height to be capped, got %q", got)
 	}
 }
 

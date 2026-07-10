@@ -18,7 +18,7 @@
 go install github.com/flaviomartins/tuniq/cmd/tuniq@latest
 ```
 
-Building from source requires Go 1.24 or newer.
+Building from source requires Go 1.25 or newer.
 
 ### From release artifacts
 

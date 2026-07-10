@@ -16,11 +16,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/flaviomartins/tuniq/pkg/config"
 	"github.com/flaviomartins/tuniq/pkg/output"
 	"github.com/flaviomartins/tuniq/pkg/platform"
 	"github.com/flaviomartins/tuniq/pkg/version"
+	"golang.org/x/term"
 )
 
 const liveAllMinRenderInterval = 250 * time.Millisecond
@@ -309,14 +311,17 @@ var statusSpinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 var sparklineTicks = [...]string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
 
 type liveRenderer struct {
-	w           io.Writer
-	bw          *bufio.Writer
-	showCount   bool
-	initialized bool
-	prevEntries []entry
-	ansiScratch []byte
-	dirtyBitmap []uint64
-	frameBuf    []byte
+	w               io.Writer
+	bw              *bufio.Writer
+	showCount       bool
+	termWidth       int
+	termHeight      int
+	initialized     bool
+	prevEntries     []entry
+	ansiScratch     []byte
+	dirtyBitmap     []uint64
+	frameBuf        []byte
+	getTerminalSize func(io.Writer) (int, int, bool)
 
 	// status bar
 	lineCountSrc   *atomic.Uint64
@@ -376,11 +381,12 @@ func (c *liveRenderControl) recordRender(now time.Time, renderDuration time.Dura
 
 func newLiveRenderer(w io.Writer, opts options) *liveRenderer {
 	return &liveRenderer{
-		w:           w,
-		bw:          bufio.NewWriterSize(w, 256*1024),
-		showCount:   opts.showCount,
-		ansiScratch: make([]byte, 0, 32),
-		frameBuf:    make([]byte, 0, 4096),
+		w:               w,
+		bw:              bufio.NewWriterSize(w, 256*1024),
+		showCount:       opts.showCount,
+		ansiScratch:     make([]byte, 0, 32),
+		frameBuf:        make([]byte, 0, 4096),
+		getTerminalSize: terminalSizeFromWriter,
 	}
 }
 
@@ -523,6 +529,55 @@ func appendRatePerSec(buf []byte, rate float64) []byte {
 		buf = append(buf, "/s"...)
 	}
 	return buf
+}
+
+func terminalSizeFromWriter(w io.Writer) (int, int, bool) {
+	fdWriter, ok := w.(interface{ Fd() uintptr })
+	if !ok {
+		return 0, 0, false
+	}
+	fd := int(fdWriter.Fd())
+	if !term.IsTerminal(fd) {
+		return 0, 0, false
+	}
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+func (r *liveRenderer) refreshTerminalSize() (bool, bool) {
+	getSize := r.getTerminalSize
+	if getSize == nil {
+		getSize = terminalSizeFromWriter
+	}
+	width, height, ok := getSize(r.w)
+	if !ok || width <= 0 || height <= 0 {
+		width, height = 0, 0
+	}
+	widthChanged := width != r.termWidth
+	heightChanged := height != r.termHeight
+	r.termWidth = width
+	r.termHeight = height
+	return widthChanged, heightChanged
+}
+
+func (r *liveRenderer) capEntriesToTerminalHeight(entries []entry) []entry {
+	if r.termHeight <= 0 {
+		return entries
+	}
+	maxRows := r.termHeight
+	if r.lineCountSrc != nil {
+		maxRows--
+	}
+	if maxRows < 0 {
+		maxRows = 0
+	}
+	if len(entries) > maxRows {
+		return entries[:maxRows]
+	}
+	return entries
 }
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -1806,14 +1861,25 @@ func (r *liveRenderer) renderStatusOnly(entries []entry) error {
 }
 
 func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
+	widthChanged, heightChanged := r.refreshTerminalSize()
+	if statusOnly && (widthChanged || heightChanged) {
+		statusOnly = false
+	}
+	entries = r.capEntriesToTerminalHeight(entries)
+
 	bw := r.bw
 	if !r.initialized {
 		if _, err := bw.WriteString("\x1b[2J\x1b[H"); err != nil {
 			return err
 		}
 		if !statusOnly {
+			r.frameBuf = r.frameBuf[:0]
 			for _, e := range entries {
-				if err := writeRenderedEntry(bw, e, r.showCount); err != nil {
+				r.frameBuf = appendRenderedEntryInlineBytesCapped(r.frameBuf, e, r.showCount, r.termWidth)
+				r.frameBuf = append(r.frameBuf, '\n')
+			}
+			if len(r.frameBuf) > 0 {
+				if _, err := bw.Write(r.frameBuf); err != nil {
 					return err
 				}
 			}
@@ -1823,6 +1889,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 			r.frameBuf = r.appendStatusLine(r.frameBuf, statusOnly)
+			r.frameBuf = appendANSITrimmedToColumns(r.frameBuf[:0], r.frameBuf, r.termWidth)
 			if _, err := bw.Write(r.frameBuf); err != nil {
 				return err
 			}
@@ -1840,6 +1907,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 			r.frameBuf = r.appendStatusLine(r.frameBuf, true)
+			r.frameBuf = appendANSITrimmedToColumns(r.frameBuf[:0], r.frameBuf, r.termWidth)
 			if _, err := bw.Write(r.frameBuf); err != nil {
 				return err
 			}
@@ -1863,6 +1931,14 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	}
 
 	changed := false
+	if widthChanged || heightChanged {
+		changed = maxLines > 0
+		for i := 0; i < maxLines; i++ {
+			word := i >> 6
+			bit := uint(i & 63)
+			r.dirtyBitmap[word] |= 1 << bit
+		}
+	}
 	for i := 0; i < maxLines; i++ {
 		var prev entry
 		prevOK := false
@@ -1885,7 +1961,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		bit := uint(i & 63)
 		r.dirtyBitmap[word] |= 1 << bit
 	}
-	if !changed {
+	if !changed && !widthChanged && !heightChanged {
 		// Entries unchanged — still refresh the status bar so the spinner and
 		// rate stay up-to-date.
 		if r.lineCountSrc != nil {
@@ -1895,6 +1971,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 			r.frameBuf = r.frameBuf[:0]
 			r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 			r.frameBuf = r.appendStatusLine(r.frameBuf, false)
+			r.frameBuf = appendANSITrimmedToColumns(r.frameBuf[:0], r.frameBuf, r.termWidth)
 			if _, err := bw.Write(r.frameBuf); err != nil {
 				return err
 			}
@@ -1919,7 +1996,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		for row := runStart; row < runEnd; row++ {
 			r.frameBuf = append(r.frameBuf, '\x1b', '[', '2', 'K')
 			if row < len(entries) {
-				r.frameBuf = appendRenderedEntryInlineBytes(r.frameBuf, entries[row], r.showCount)
+				r.frameBuf = appendRenderedEntryInlineBytesCapped(r.frameBuf, entries[row], r.showCount, r.termWidth)
 			}
 			if row+1 < runEnd {
 				r.frameBuf = append(r.frameBuf, '\n')
@@ -1947,6 +2024,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		r.frameBuf = r.frameBuf[:0]
 		r.frameBuf = append(r.frameBuf, "\x1b[2K"...)
 		r.frameBuf = r.appendStatusLine(r.frameBuf, false)
+		r.frameBuf = appendANSITrimmedToColumns(r.frameBuf[:0], r.frameBuf, r.termWidth)
 		if _, err := bw.Write(r.frameBuf); err != nil {
 			return err
 		}
@@ -1984,6 +2062,74 @@ func appendRenderedEntryInlineBytes(dst []byte, e entry, showCount bool) []byte 
 		dst = append(dst, ' ')
 	}
 	return append(dst, e.value...)
+}
+
+func appendRenderedEntryInlineBytesCapped(dst []byte, e entry, showCount bool, maxColumns int) []byte {
+	if maxColumns <= 0 {
+		return appendRenderedEntryInlineBytes(dst, e, showCount)
+	}
+	remaining := maxColumns
+	if showCount && remaining > 0 {
+		count := strconv.FormatUint(e.count, 10)
+		for i := 0; i < len(count) && remaining > 0; i++ {
+			dst = append(dst, count[i])
+			remaining--
+		}
+		if remaining > 0 {
+			dst = append(dst, ' ')
+			remaining--
+		}
+	}
+	if remaining <= 0 {
+		return dst
+	}
+	for len(e.value) > 0 && remaining > 0 {
+		rn, size := utf8.DecodeRuneInString(e.value)
+		if rn == utf8.RuneError && size == 1 {
+			size = 1
+		}
+		dst = append(dst, e.value[:size]...)
+		e.value = e.value[size:]
+		remaining--
+	}
+	return dst
+}
+
+func appendANSITrimmedToColumns(dst, src []byte, maxColumns int) []byte {
+	if maxColumns <= 0 {
+		return append(dst, src...)
+	}
+	visible := 0
+	for i := 0; i < len(src) && visible < maxColumns; {
+		b := src[i]
+		if b == '\x1b' && i+1 < len(src) && src[i+1] == '[' {
+			j := i + 2
+			for j < len(src) {
+				c := src[j]
+				j++
+				if c >= '@' && c <= '~' {
+					break
+				}
+			}
+			dst = append(dst, src[i:j]...)
+			i = j
+			continue
+		}
+		if b < utf8.RuneSelf {
+			dst = append(dst, b)
+			i++
+			visible++
+			continue
+		}
+		_, size := utf8.DecodeRune(src[i:])
+		if size <= 0 {
+			size = 1
+		}
+		dst = append(dst, src[i:i+size]...)
+		i += size
+		visible++
+	}
+	return dst
 }
 
 func writeCursorClearLine(w io.Writer, line int, buf []byte) error {
