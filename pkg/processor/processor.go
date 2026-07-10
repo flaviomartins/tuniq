@@ -40,6 +40,7 @@ const counterGrowthTargetFactor = 2
 
 type options struct {
 	topN             int
+	maxLines         uint64
 	showAll          bool
 	reverse          bool
 	showCount        bool
@@ -690,6 +691,7 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 
 	opts := options{
 		topN:             defaults.TopN,
+		maxLines:         defaults.MaxLines,
 		showAll:          defaults.ShowAll,
 		reverse:          defaults.Reverse,
 		showCount:        defaults.ShowCount,
@@ -712,6 +714,8 @@ func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
 	var noStatus bool
 
 	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
+	fs.Uint64Var(&opts.maxLines, "l", opts.maxLines, "short form for --max-lines")
+	fs.Uint64Var(&opts.maxLines, "max-lines", opts.maxLines, "stop after reading N lines (0 means no limit)")
 	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
 	fs.IntVar(&opts.flushEvery, "update-every", opts.flushEvery, "long form for -u")
 	fs.IntVar(&opts.flushEvery, "f", opts.flushEvery, "deprecated alias for -u")
@@ -1112,6 +1116,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 		sendErr = streamLinesDispatch(
 			ctx,
 			inputs,
+			opts.maxLines,
 			workerCount,
 			batchSize,
 			&lineCounts,
@@ -1121,7 +1126,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 			workerFail,
 		)
 	} else {
-		sendErr = streamLines(ctx, inputs, func(line []byte) error {
+		sendErr = streamLines(ctx, inputs, opts.maxLines, func(line []byte) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -1334,12 +1339,30 @@ func liveSnapshotSelection(opts options) (topN int, showAll bool) {
 	return opts.topN, opts.showAll
 }
 
-func streamLines(ctx context.Context, inputs []io.ReadCloser, emit func([]byte) error) error {
+func streamLines(ctx context.Context, inputs []io.ReadCloser, maxLines uint64, emit func([]byte) error) error {
+	linesRead := uint64(0)
+	canReadMore := func() bool {
+		return maxLines == 0 || linesRead < maxLines
+	}
+	emitLine := func(line []byte) error {
+		if !canReadMore() {
+			return nil
+		}
+		linesRead++
+		return emit(line)
+	}
+
 	for _, input := range inputs {
+		if !canReadMore() {
+			break
+		}
 		reader := acquireStreamReader(input)
 		readErr := func() error {
 			var longLine []byte
 			for {
+				if !canReadMore() {
+					return nil
+				}
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -1355,19 +1378,19 @@ func streamLines(ctx context.Context, inputs []io.ReadCloser, emit func([]byte) 
 					if len(longLine) > 0 {
 						longLine = append(longLine, fragment...)
 						line := trimLineEnding(longLine)
-						if emitErr := emit(line); emitErr != nil {
+						if emitErr := emitLine(line); emitErr != nil {
 							return emitErr
 						}
 						longLine = longLine[:0]
 					} else {
 						line := trimLineEnding(fragment)
-						if emitErr := emit(line); emitErr != nil {
+						if emitErr := emitLine(line); emitErr != nil {
 							return emitErr
 						}
 					}
 				} else if len(longLine) > 0 && errors.Is(err, io.EOF) {
 					line := trimLineEnding(longLine)
-					if emitErr := emit(line); emitErr != nil {
+					if emitErr := emitLine(line); emitErr != nil {
 						return emitErr
 					}
 					longLine = longLine[:0]
@@ -1393,6 +1416,7 @@ func streamLines(ctx context.Context, inputs []io.ReadCloser, emit func([]byte) 
 func streamLinesDispatch(
 	ctx context.Context,
 	inputs []io.ReadCloser,
+	maxLines uint64,
 	workerCount int,
 	batchSize int,
 	lineCounts *atomic.Uint64,
@@ -1401,11 +1425,21 @@ func streamLinesDispatch(
 	jobChans []chan *lineBatch,
 	workerFail *workerFailure,
 ) error {
+	reachedMaxLines := func() bool {
+		return maxLines > 0 && lineCounts.Load() >= maxLines
+	}
+
 	for _, input := range inputs {
+		if reachedMaxLines() {
+			break
+		}
 		reader := acquireStreamReader(input)
 		readErr := func() error {
 			var longLine []byte
 			for {
+				if reachedMaxLines() {
+					return nil
+				}
 				select {
 				case <-ctx.Done():
 					return ctx.Err()

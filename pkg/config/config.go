@@ -15,6 +15,7 @@ import (
 
 type Defaults struct {
 	TopN             int
+	MaxLines         uint64
 	ShowAll          bool
 	Reverse          bool
 	ShowCount        bool
@@ -133,6 +134,12 @@ func assignSetting(settings *Defaults, key, value string) error {
 			return fmt.Errorf("invalid integer for top_n: %w", err)
 		}
 		settings.TopN = v
+	case "max_lines":
+		v, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid uint for max_lines: %w", err)
+		}
+		settings.MaxLines = v
 	case "show_all":
 		v, err := strconv.ParseBool(value)
 		if err != nil {
