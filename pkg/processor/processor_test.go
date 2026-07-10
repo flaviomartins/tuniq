@@ -377,6 +377,47 @@ func TestLiveRendererInitWithoutStatusHasNoTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestLiveRendererHeightShrinkRedrawsOnlyVisibleRows(t *testing.T) {
+	var out bytes.Buffer
+	renderer := newLiveRenderer(&out, options{showCount: true})
+	height := 6
+	renderer.getTerminalSize = func(io.Writer) (int, int, bool) {
+		return 80, height, true
+	}
+
+	var lines atomic.Uint64
+	lines.Store(5)
+	renderer.SetLineCountSource(&lines)
+
+	entries := []entry{
+		{count: 5, value: "alpha"},
+		{count: 4, value: "beta"},
+		{count: 3, value: "gamma"},
+		{count: 2, value: "delta"},
+		{count: 1, value: "epsilon"},
+	}
+	if err := renderer.render(entries); err != nil {
+		t.Fatalf("initial render failed: %v", err)
+	}
+
+	out.Reset()
+	height = 3 // 2 rows + status bar
+	if err := renderer.renderStatusOnly(entries); err != nil {
+		t.Fatalf("resize redraw failed: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "5 alpha") || !strings.Contains(got, "4 beta") {
+		t.Fatalf("expected all visible rows to be populated immediately after shrink, got %q", got)
+	}
+	if strings.Contains(got, "3 gamma") {
+		t.Fatalf("expected redraw to be limited to visible rows after shrink, got %q", got)
+	}
+	if n := strings.Count(got, "\n"); n != 1 {
+		t.Fatalf("expected redraw to write only visible data rows, got %d newlines in %q", n, got)
+	}
+}
+
 func TestRunLiveRefreshDeprecatedAliasStillWorks(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
