@@ -86,6 +86,14 @@ curl -q -sN https://stream.wikimedia.org/v2/stream/recentchange \
   | tuniq -n 20 -u 1
 ```
 
+### From a stream with [ssecat](https://github.com/flaviomartins/ssecat)
+
+```bash
+ssecat https://stream.wikimedia.org/v2/stream/recentchange \
+  | jq --unbuffered -r '.title // empty' \
+  | tuniq -n 20 -u 1
+```
+
 ### Value-only output
 
 ```bash
