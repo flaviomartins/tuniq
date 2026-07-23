@@ -684,9 +684,6 @@ func ParseFlags(args []string, stderr io.Writer) (config.Defaults, []string, err
 	} else if jsonSet && jsonOut {
 		cfg.OutputMode = output.ModeJSON
 	}
-	if cfg.ProgressEvery == 0 && cfg.ProgressSeconds == 0 {
-		return config.Defaults{}, nil, errors.New("progress-every or progress-every-seconds must be greater than zero")
-	}
 	return cfg, fs.Args(), nil
 }
 
@@ -737,7 +734,7 @@ func RunWithOptions(ctx context.Context, cfg config.Defaults, inputs []io.ReadCl
 	if opts.flushEvery > 0 {
 		opts.progressEvery = uint64(opts.flushEvery)
 	}
-	if opts.progressEvery == 0 && opts.progressSeconds == 0 {
+	if (opts.flushEvery > 0 || opts.progress) && opts.progressEvery == 0 && opts.progressSeconds == 0 {
 		fmt.Fprintln(stderr, "tuniq: at least one update cadence must be configured")
 		return 2
 	}
