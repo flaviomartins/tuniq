@@ -873,14 +873,14 @@ func TestRunAllowsShortSecondsCadenceFlag(t *testing.T) {
 	}
 }
 
-func TestRunRejectsMissingCadence(t *testing.T) {
+func TestRunRejectsMissingCadenceWhenProgressEnabled(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	code := run([]string{"--progress-every", "0"}, strings.NewReader("a\n"), &out, &errOut)
+	code := run([]string{"--progress", "--progress-every", "0"}, strings.NewReader("a\n"), &out, &errOut)
 	if code != 2 {
 		t.Fatalf("expected exit code 2, got %d", code)
 	}
-	if !strings.Contains(errOut.String(), "progress-every or progress-every-seconds") {
+	if !strings.Contains(errOut.String(), "at least one update cadence must be configured") {
 		t.Fatalf("unexpected error output: %s", errOut.String())
 	}
 }
