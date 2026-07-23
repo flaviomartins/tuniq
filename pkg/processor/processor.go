@@ -589,15 +589,135 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return Run(args, stdin, stdout, stderr)
 }
 
-func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	opts, paths, err := parseFlags(args, stderr)
+// ParseFlags parses command-line arguments and returns a populated config.Defaults
+// along with any remaining positional file paths. Callers can pass the result
+// directly to RunWithOptions after opening the input files.
+func ParseFlags(args []string, stderr io.Writer) (config.Defaults, []string, error) {
+	cfg, err := config.LoadDefault()
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		fmt.Fprintf(stderr, "tuniq: %v\n", err)
-		return 2
+		return config.Defaults{}, nil, err
 	}
+
+	fs := flag.NewFlagSet("tuniq", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var showVersion bool
+	var csvOut bool
+	var jsonOut bool
+	var noCount bool
+	var noStatus bool
+
+	fs.IntVar(&cfg.TopN, "n", cfg.TopN, "show top N entries")
+	fs.Uint64Var(&cfg.MaxLines, "l", cfg.MaxLines, "short form for --max-lines")
+	fs.Uint64Var(&cfg.MaxLines, "max-lines", cfg.MaxLines, "stop after reading N lines (0 means no limit)")
+	fs.IntVar(&cfg.UpdateEvery, "u", cfg.UpdateEvery, "update every N lines in live mode (plain output only)")
+	fs.IntVar(&cfg.UpdateEvery, "update-every", cfg.UpdateEvery, "long form for -u")
+	fs.IntVar(&cfg.UpdateEvery, "f", cfg.UpdateEvery, "deprecated alias for -u")
+	fs.IntVar(&cfg.UpdateEvery, "flush-every", cfg.UpdateEvery, "deprecated alias for --update-every")
+	fs.BoolVar(&cfg.ShowAll, "a", cfg.ShowAll, "show all entries (live mode shows throttled preview; EOF output is complete)")
+	fs.BoolVar(&cfg.Reverse, "r", cfg.Reverse, "reverse ordering (ascending count)")
+	fs.BoolVar(&cfg.ShowCount, "c", cfg.ShowCount, "show counts")
+	fs.BoolVar(&noCount, "no-count", false, "hide counts")
+	fs.BoolVar(&cfg.StatusBar, "status", cfg.StatusBar, "show the live status bar (spinner, rate, sparkline)")
+	fs.BoolVar(&noStatus, "no-status", false, "hide the live status bar (spinner, rate, sparkline)")
+	fs.BoolVar(&csvOut, "csv", false, "output CSV")
+	fs.BoolVar(&jsonOut, "json", false, "output JSON")
+	fs.BoolVar(&cfg.Stats, "stats", cfg.Stats, "write processing statistics to stderr")
+	fs.BoolVar(&cfg.StatsRSS, "stats-rss", cfg.StatsRSS, "include OS-reported peak RSS in stats when available")
+	fs.BoolVar(&cfg.Progress, "progress", cfg.Progress, "write periodic progress to stderr")
+	fs.BoolVar(&showVersion, "version", false, "print version and exit")
+	fs.IntVar(&cfg.Workers, "workers", cfg.Workers, "number of worker shards")
+	fs.Uint64Var(&cfg.MemoryLimitBytes, "memory-limit-bytes", cfg.MemoryLimitBytes, "memory limit before aborting (spill-to-disk not implemented)")
+	fs.Uint64Var(&cfg.ProgressEvery, "progress-every", cfg.ProgressEvery, "progress interval in lines")
+	fs.Float64Var(&cfg.ProgressSeconds, "s", cfg.ProgressSeconds, "short form for --progress-every-seconds")
+	fs.Float64Var(&cfg.ProgressSeconds, "progress-every-seconds", cfg.ProgressSeconds, "update interval in seconds")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: tuniq [options] [file ...]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Streaming frequency analysis for unsorted input.")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintf(
+			stderr,
+			"Live mode note: when combining -a with live updates (-u/--update-every),\n"+
+				"streaming display is a throttled top-%d preview to keep overhead bounded.\n"+
+				"Final EOF output remains exact and complete.\n",
+			liveAllPreviewTopN,
+		)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return config.Defaults{}, nil, err
+	}
+	if showVersion {
+		fmt.Fprintf(stderr, "tuniq %s\n", version.Version)
+		return config.Defaults{}, nil, flag.ErrHelp
+	}
+	if noCount {
+		cfg.ShowCount = false
+	}
+	if noStatus {
+		cfg.StatusBar = false
+	}
+	modeFlagCount := 0
+	csvSet, jsonSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "csv":
+			csvSet = true
+		case "json":
+			jsonSet = true
+		}
+	})
+	if csvSet {
+		modeFlagCount++
+	}
+	if jsonSet {
+		modeFlagCount++
+	}
+	if modeFlagCount > 1 {
+		return config.Defaults{}, nil, errors.New("--csv and --json are mutually exclusive")
+	}
+	if csvSet && csvOut {
+		cfg.OutputMode = output.ModeCSV
+	} else if jsonSet && jsonOut {
+		cfg.OutputMode = output.ModeJSON
+	}
+	if cfg.ProgressEvery == 0 && cfg.ProgressSeconds == 0 {
+		return config.Defaults{}, nil, errors.New("progress-every or progress-every-seconds must be greater than zero")
+	}
+	return cfg, fs.Args(), nil
+}
+
+// optionsFromDefaults converts an external config.Defaults into the internal
+// options type used by the processing pipeline.
+func optionsFromDefaults(d config.Defaults) options {
+	return options{
+		topN:             d.TopN,
+		maxLines:         d.MaxLines,
+		showAll:          d.ShowAll,
+		reverse:          d.Reverse,
+		showCount:        d.ShowCount,
+		flushEvery:       d.UpdateEvery,
+		stats:            d.Stats,
+		statsRSS:         d.StatsRSS,
+		progress:         d.Progress,
+		statusBar:        d.StatusBar,
+		workers:          d.Workers,
+		memoryLimitBytes: d.MemoryLimitBytes,
+		progressEvery:    d.ProgressEvery,
+		progressSeconds:  d.ProgressSeconds,
+		output:           d.OutputMode,
+	}
+}
+
+// RunWithOptions runs the processing pipeline with pre-parsed options and
+// pre-opened input readers. The caller is responsible for closing the readers.
+// This is the primary library entry point for callers that want to supply their
+// own flag parsing or file opening logic.
+func RunWithOptions(ctx context.Context, cfg config.Defaults, inputs []io.ReadCloser, stdout, stderr io.Writer) int {
+	opts := optionsFromDefaults(cfg)
 	if opts.workers < 1 {
 		fmt.Fprintln(stderr, "tuniq: workers must be greater than zero")
 		return 2
@@ -622,31 +742,12 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return 2
 	}
 
-	var inputReaders []io.ReadCloser
-	if len(paths) == 0 {
-		inputReaders = append(inputReaders, io.NopCloser(stdin))
-	} else {
-		for _, p := range paths {
-			f, openErr := os.Open(p)
-			if openErr != nil {
-				fmt.Fprintf(stderr, "tuniq: %s: %v\n", p, openErr)
-				return 1
-			}
-			inputReaders = append(inputReaders, f)
-		}
-	}
-	defer func() {
-		for _, r := range inputReaders {
-			_ = r.Close()
-		}
-	}()
-
 	start := time.Now()
 	var renderer *liveRenderer
 	if opts.flushEvery > 0 {
 		renderer = newLiveRenderer(stdout, opts)
 	}
-	shards, stats, processErr := processStream(ctx, inputReaders, opts, renderer, stderr)
+	shards, stats, processErr := processStream(ctx, inputs, opts, renderer, stderr)
 	if processErr != nil {
 		fmt.Fprintf(stderr, "tuniq: %v\n", processErr)
 		return 1
@@ -680,120 +781,37 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	return 0
 }
 
-func parseFlags(args []string, stderr io.Writer) (options, []string, error) {
-	defaults, err := config.LoadDefault()
+// RunContext parses args, opens any file paths, and runs the pipeline.
+// It is a convenience wrapper around ParseFlags and RunWithOptions, suitable
+// for use in tests and as a backward-compatible entry point.
+func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	cfg, paths, err := ParseFlags(args, stderr)
 	if err != nil {
-		return options{}, nil, err
-	}
-
-	fs := flag.NewFlagSet("tuniq", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	opts := options{
-		topN:             defaults.TopN,
-		maxLines:         defaults.MaxLines,
-		showAll:          defaults.ShowAll,
-		reverse:          defaults.Reverse,
-		showCount:        defaults.ShowCount,
-		flushEvery:       defaults.UpdateEvery,
-		stats:            defaults.Stats,
-		statsRSS:         defaults.StatsRSS,
-		progress:         defaults.Progress,
-		statusBar:        defaults.StatusBar,
-		workers:          defaults.Workers,
-		memoryLimitBytes: defaults.MemoryLimitBytes,
-		progressEvery:    defaults.ProgressEvery,
-		progressSeconds:  defaults.ProgressSeconds,
-		output:           defaults.OutputMode,
-	}
-
-	var showVersion bool
-	var csvOut bool
-	var jsonOut bool
-	var noCount bool
-	var noStatus bool
-
-	fs.IntVar(&opts.topN, "n", opts.topN, "show top N entries")
-	fs.Uint64Var(&opts.maxLines, "l", opts.maxLines, "short form for --max-lines")
-	fs.Uint64Var(&opts.maxLines, "max-lines", opts.maxLines, "stop after reading N lines (0 means no limit)")
-	fs.IntVar(&opts.flushEvery, "u", opts.flushEvery, "update every N lines in live mode (plain output only)")
-	fs.IntVar(&opts.flushEvery, "update-every", opts.flushEvery, "long form for -u")
-	fs.IntVar(&opts.flushEvery, "f", opts.flushEvery, "deprecated alias for -u")
-	fs.IntVar(&opts.flushEvery, "flush-every", opts.flushEvery, "deprecated alias for --update-every")
-	fs.BoolVar(&opts.showAll, "a", opts.showAll, "show all entries (live mode shows throttled preview; EOF output is complete)")
-	fs.BoolVar(&opts.reverse, "r", opts.reverse, "reverse ordering (ascending count)")
-	fs.BoolVar(&opts.showCount, "c", opts.showCount, "show counts")
-	fs.BoolVar(&noCount, "no-count", false, "hide counts")
-	fs.BoolVar(&opts.statusBar, "status", opts.statusBar, "show the live status bar (spinner, rate, sparkline)")
-	fs.BoolVar(&noStatus, "no-status", false, "hide the live status bar (spinner, rate, sparkline)")
-	fs.BoolVar(&csvOut, "csv", false, "output CSV")
-	fs.BoolVar(&jsonOut, "json", false, "output JSON")
-	fs.BoolVar(&opts.stats, "stats", opts.stats, "write processing statistics to stderr")
-	fs.BoolVar(&opts.statsRSS, "stats-rss", opts.statsRSS, "include OS-reported peak RSS in stats when available")
-	fs.BoolVar(&opts.progress, "progress", opts.progress, "write periodic progress to stderr")
-	fs.BoolVar(&showVersion, "version", false, "print version and exit")
-	fs.IntVar(&opts.workers, "workers", opts.workers, "number of worker shards")
-	fs.Uint64Var(&opts.memoryLimitBytes, "memory-limit-bytes", opts.memoryLimitBytes, "memory limit before aborting (spill-to-disk not implemented)")
-	fs.Uint64Var(&opts.progressEvery, "progress-every", opts.progressEvery, "progress interval in lines")
-	fs.Float64Var(&opts.progressSeconds, "s", opts.progressSeconds, "short form for --progress-every-seconds")
-	fs.Float64Var(&opts.progressSeconds, "progress-every-seconds", opts.progressSeconds, "update interval in seconds")
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: tuniq [options] [file ...]")
-		fmt.Fprintln(stderr, "")
-		fmt.Fprintln(stderr, "Streaming frequency analysis for unsorted input.")
-		fmt.Fprintln(stderr, "")
-		fs.PrintDefaults()
-		fmt.Fprintln(stderr, "")
-		fmt.Fprintf(
-			stderr,
-			"Live mode note: when combining -a with live updates (-u/--update-every),\n"+
-				"streaming display is a throttled top-%d preview to keep overhead bounded.\n"+
-				"Final EOF output remains exact and complete.\n",
-			liveAllPreviewTopN,
-		)
-	}
-
-	if err := fs.Parse(args); err != nil {
-		return options{}, nil, err
-	}
-	if showVersion {
-		fmt.Fprintf(stderr, "tuniq %s\n", version.Version)
-		return options{}, nil, flag.ErrHelp
-	}
-	if noCount {
-		opts.showCount = false
-	}
-	if noStatus {
-		opts.statusBar = false
-	}
-	modeFlagCount := 0
-	csvSet, jsonSet := false, false
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "csv":
-			csvSet = true
-		case "json":
-			jsonSet = true
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
 		}
-	})
-	if csvSet {
-		modeFlagCount++
+		fmt.Fprintf(stderr, "tuniq: %v\n", err)
+		return 2
 	}
-	if jsonSet {
-		modeFlagCount++
+	var inputReaders []io.ReadCloser
+	if len(paths) == 0 {
+		inputReaders = append(inputReaders, io.NopCloser(stdin))
+	} else {
+		for _, p := range paths {
+			f, openErr := os.Open(p)
+			if openErr != nil {
+				fmt.Fprintf(stderr, "tuniq: %s: %v\n", p, openErr)
+				return 1
+			}
+			inputReaders = append(inputReaders, f)
+		}
 	}
-	if modeFlagCount > 1 {
-		return options{}, nil, errors.New("--csv and --json are mutually exclusive")
-	}
-	if csvSet && csvOut {
-		opts.output = output.ModeCSV
-	} else if jsonSet && jsonOut {
-		opts.output = output.ModeJSON
-	}
-	if opts.progressEvery == 0 && opts.progressSeconds == 0 {
-		return options{}, nil, errors.New("progress-every or progress-every-seconds must be greater than zero")
-	}
-	return opts, fs.Args(), nil
+	defer func() {
+		for _, r := range inputReaders {
+			_ = r.Close()
+		}
+	}()
+	return RunWithOptions(ctx, cfg, inputReaders, stdout, stderr)
 }
 
 func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, renderer *liveRenderer, stderr io.Writer) ([][]entry, runStats, error) {
