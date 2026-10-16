@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"maps"
 	"os"
 	"runtime"
 	"sort"
@@ -177,9 +178,7 @@ func (m *mapCounter) Grow(capacity int) {
 		return
 	}
 	grown := make(map[string]*uint64, capacity)
-	for k, v := range m.values {
-		grown[k] = v
-	}
+	maps.Copy(grown, m.values)
 	m.values = grown
 }
 
@@ -368,10 +367,7 @@ func (c *liveRenderControl) recordRender(now time.Time, renderDuration time.Dura
 	if renderDuration <= 0 {
 		return
 	}
-	target := maxDuration(c.baseInterval, 4*renderDuration)
-	if target > liveRenderMaxInterval {
-		target = liveRenderMaxInterval
-	}
+	target := min(maxDuration(c.baseInterval, 4*renderDuration), liveRenderMaxInterval)
 	if c.adaptiveInterval == 0 {
 		c.adaptiveInterval = target
 		return
@@ -891,7 +887,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
+	for i := range workerCount {
 		jobChans[i] = make(chan *lineBatch, 256)
 		if liveMode {
 			snapshotReqChans[i] = make(chan snapshotRequest, 1)
@@ -1027,9 +1023,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 	}
 	var renderWG sync.WaitGroup
 	if liveMode {
-		renderWG.Add(1)
-		go func() {
-			defer renderWG.Done()
+		renderWG.Go(func() {
 			var snapshotMergeBuf []entry
 			var snapshotNodeBuf []mergeNode
 			var snapshotRequested []bool
@@ -1074,14 +1068,12 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 				default:
 				}
 			}
-		}()
+		})
 	}
 	var statusWG sync.WaitGroup
 	statusRenderStopCh := make(chan struct{})
 	if liveMode && opts.statusBar {
-		statusWG.Add(1)
-		go func() {
-			defer statusWG.Done()
+		statusWG.Go(func() {
 			ticker := time.NewTicker(liveStatusRenderInterval)
 			defer ticker.Stop()
 			for {
@@ -1092,7 +1084,7 @@ func processStream(ctx context.Context, inputs []io.ReadCloser, opts options, re
 					enqueueRenderRequest(statusRenderReqCh)
 				}
 			}
-		}()
+		})
 	}
 	sampleMemory := opts.stats || opts.statsRSS || opts.memoryLimitBytes > 0
 	var done chan struct{}
@@ -1968,10 +1960,7 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 		return nil
 	}
 
-	maxLines := len(entries)
-	if len(prevEntries) > maxLines {
-		maxLines = len(prevEntries)
-	}
+	maxLines := max(len(prevEntries), len(entries))
 
 	bitmapWords := (maxLines + 63) / 64
 	if cap(r.dirtyBitmap) < bitmapWords {
@@ -1985,13 +1974,13 @@ func (r *liveRenderer) renderWithMode(entries []entry, statusOnly bool) error {
 	changed := false
 	if widthChanged || heightChanged {
 		changed = maxLines > 0
-		for i := 0; i < maxLines; i++ {
+		for i := range maxLines {
 			word := i >> 6
 			bit := uint(i & 63)
 			r.dirtyBitmap[word] |= 1 << bit
 		}
 	}
-	for i := 0; i < maxLines; i++ {
+	for i := range maxLines {
 		var prev entry
 		prevOK := false
 		if i < len(prevEntries) {
@@ -2362,10 +2351,7 @@ func maybeGrowCounter(c *mapCounter, state *counterGrowthState, batchLines int, 
 	if float64(unique)/float64(state.linesSeen) < counterGrowthMinUniqueRatio {
 		return
 	}
-	target := unique * counterGrowthTargetFactor
-	if target < 65536 {
-		target = 65536
-	}
+	target := max(unique*counterGrowthTargetFactor, 65536)
 	if memLimit > 0 {
 		estimatedAfterGrowth := c.EstimatedBytes() * 2
 		if estimatedAfterGrowth > memLimit {

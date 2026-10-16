@@ -21,7 +21,6 @@ var sink uint64 // prevent dead-code elimination
 func BenchmarkHashMaphash(b *testing.B) {
 	seed := maphash.MakeSeed()
 	for _, line := range benchLines {
-		line := line
 		b.Run(string(line[:min(8, len(line))]), func(b *testing.B) {
 			b.SetBytes(int64(len(line)))
 			b.ReportAllocs()
@@ -96,7 +95,6 @@ func BenchmarkShardIndexAdler32(b *testing.B) {
 
 func BenchmarkHashCRC32C(b *testing.B) {
 	for _, line := range benchLines {
-		line := line
 		b.Run(string(line[:min(8, len(line))]), func(b *testing.B) {
 			b.SetBytes(int64(len(line)))
 			b.ReportAllocs()
@@ -110,7 +108,6 @@ func BenchmarkHashCRC32C(b *testing.B) {
 
 func BenchmarkHashCRC32IEEE(b *testing.B) {
 	for _, line := range benchLines {
-		line := line
 		b.Run(string(line[:min(8, len(line))]), func(b *testing.B) {
 			b.SetBytes(int64(len(line)))
 			b.ReportAllocs()
@@ -124,7 +121,6 @@ func BenchmarkHashCRC32IEEE(b *testing.B) {
 
 func BenchmarkHashCRC64(b *testing.B) {
 	for _, line := range benchLines {
-		line := line
 		b.Run(string(line[:min(8, len(line))]), func(b *testing.B) {
 			b.SetBytes(int64(len(line)))
 			b.ReportAllocs()
@@ -138,7 +134,6 @@ func BenchmarkHashCRC64(b *testing.B) {
 
 func BenchmarkHashAdler32(b *testing.B) {
 	for _, line := range benchLines {
-		line := line
 		b.Run(string(line[:min(8, len(line))]), func(b *testing.B) {
 			b.SetBytes(int64(len(line)))
 			b.ReportAllocs()
