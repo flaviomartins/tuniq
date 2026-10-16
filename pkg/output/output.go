@@ -3,7 +3,7 @@ package output
 import (
 	"bufio"
 	"encoding/csv"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 )

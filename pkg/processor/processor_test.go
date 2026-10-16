@@ -524,7 +524,7 @@ func TestRunLiveRefreshShowsStreamingStatusBetweenSparseFlushes(t *testing.T) {
 		defer func() {
 			_ = inW.Close()
 		}()
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			<-ticker.C
 			if _, err := io.WriteString(inW, "a\n"); err != nil {
 				return
@@ -786,7 +786,7 @@ func TestRunLiveRefreshIgnoresSlowProgressSecondsForStatusUpdates(t *testing.T) 
 		defer func() {
 			_ = inW.Close()
 		}()
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			<-ticker.C
 			if _, err := io.WriteString(inW, "a\n"); err != nil {
 				return
@@ -1024,7 +1024,7 @@ func TestRunLiveModeMemoryLimitReturnsWithoutHang(t *testing.T) {
 
 func TestProcessRandomizedDeterministic(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		fmt.Fprintf(&b, "k%03d\n", i%37)
 	}
 	input := b.String()
@@ -1045,7 +1045,7 @@ func TestProcessRandomizedDeterministic(t *testing.T) {
 
 func testUniqueInput(n int) string {
 	var b strings.Builder
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&b, "k%08d\n", i)
 	}
 	return b.String()
@@ -1054,7 +1054,7 @@ func testUniqueInput(n int) string {
 func benchmarkInput(size int) string {
 	var b strings.Builder
 	b.Grow(size * 12)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		fmt.Fprintf(&b, "line-%06d\n", i%1000)
 	}
 	return b.String()
@@ -1063,7 +1063,7 @@ func benchmarkInput(size int) string {
 func benchmarkInputUnique(size int) string {
 	var b strings.Builder
 	b.Grow(size * 12)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		fmt.Fprintf(&b, "line-%06d\n", i)
 	}
 	return b.String()
@@ -1074,7 +1074,7 @@ func benchmarkInputZipf(total int, imax uint64, s, v float64) string {
 	z := rand.NewZipf(r, s, v, imax)
 	var b strings.Builder
 	b.Grow(total * 12)
-	for i := 0; i < total; i++ {
+	for range total {
 		fmt.Fprintf(&b, "line-%06d\n", z.Uint64())
 	}
 	return b.String()
